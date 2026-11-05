@@ -210,6 +210,75 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
   }
 });
 
+test('overlapping activation requests are serialized across lifecycle handles', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-overlap-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const firstLifecycle = openSessionLifecycle(databasePath, store);
+  const secondLifecycle = openSessionLifecycle(databasePath, store);
+  let releaseDelivery;
+  let deliveryStarted;
+  const started = new Promise((resolve) => { deliveryStarted = resolve; });
+  let deliveryCalls = 0;
+  const provider = {
+    capabilities: {
+      contextDelivery: true,
+      acknowledgementLevel: 'payload_accepted',
+      provesModelComprehension: false,
+    },
+    async deliver({ handover, activationRequestId }) {
+      deliveryCalls += 1;
+      deliveryStarted();
+      await new Promise((resolve) => { releaseDelivery = resolve; });
+      return {
+        activationRequestId,
+        handoverId: handover.id,
+        attemptId: 'provider-attempt-1',
+        outcome: 'acknowledged',
+        acknowledgementLevel: 'payload_accepted',
+      };
+    },
+  };
+
+  try {
+    store.createProject({ id: 'project-overlap', name: 'Overlap project' });
+    firstLifecycle.createSession({ id: 'session-overlap' });
+
+    const firstActivation = firstLifecycle.activateProject({
+      sessionId: 'session-overlap',
+      projectId: 'project-overlap',
+      confirmedProjectId: 'project-overlap',
+      providerAdapter: provider,
+      requestId: 'request-overlap-1',
+    });
+    await started;
+
+    await assert.rejects(
+      secondLifecycle.activateProject({
+        sessionId: 'session-overlap',
+        projectId: 'project-overlap',
+        confirmedProjectId: 'project-overlap',
+        providerAdapter: provider,
+        requestId: 'request-overlap-2',
+      }),
+      /confirmed activation request in progress/,
+    );
+
+    assert.equal(deliveryCalls, 1);
+    releaseDelivery();
+    const result = await firstActivation;
+    assert.equal(result.status, 'active');
+    assert.equal(firstLifecycle.listActivations('session-overlap').length, 1);
+    assert.equal(firstLifecycle.listEvents('session-overlap')
+      .filter((event) => event.eventType === 'activation_requested').length, 1);
+  } finally {
+    firstLifecycle.close();
+    secondLifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('failed or unknown initial delivery never creates an active Project Activation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-failure-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
