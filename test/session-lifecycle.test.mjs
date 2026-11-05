@@ -102,12 +102,10 @@ test('simulated provider rejects malformed delivery requests', async () => {
   );
 });
 
-// These contract scenarios become executable as the lifecycle coordinator
-// and persistence model are introduced. TODO is intentional: the current
-// continuity store has no Session or Project Activation API yet.
+// Scenarios not yet implemented remain explicit TODOs. The lifecycle API below
+// exercises only the initial activation and confirmation boundary.
 test.todo('SLA-02: switching A to B checkpoints A and activates B only after delivery');
 test.todo('SLA-03: returning B to A creates a fresh A activation and handover');
-test.todo('SLA-04: failed or unknown delivery blocks the incoming activation');
 test.todo('SLA-05: failed transition preserves the outgoing checkpoint and all history');
 test.todo('SLA-06: contributions use the active Project Activation');
 test.todo('SLA-07: a newer contribution marks another active activation potentially stale');
@@ -372,7 +370,7 @@ test('overlapping activation requests are serialized across lifecycle handles', 
   }
 });
 
-test('failed or unknown initial delivery never creates an active Project Activation', async () => {
+test('SLA-04: failed or unknown delivery blocks activation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-failure-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
   const store = openStore(databasePath);
