@@ -256,4 +256,5 @@ test('bounded handover discloses omitted history and marks relationship endpoint
     && link.fromIncluded === true
     && link.toIncluded === false));
   assert.ok(!handover.currentState.recordIdsByCategory.requirement.includes('turn-06-user-provider-requirement'));
+  assert.deepEqual(handover.currentState.supersededRecordIds, []);
 }));
