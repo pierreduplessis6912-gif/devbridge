@@ -506,7 +506,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         && typeof delivery.acknowledgementLevel === 'string'
         && delivery.acknowledgementLevel === providerAdapter.capabilities.acknowledgementLevel;
       const outcome = acknowledged ? 'acknowledged'
-        : validOutcome ? delivery.outcome : 'unknown';
+        : validOutcome && delivery.outcome === 'failed' ? 'failed' : 'unknown';
       const providerAttemptReference = matches ? delivery.attemptId : null;
       const attemptId = randomUUID();
       const attemptedAt = new Date().toISOString();
