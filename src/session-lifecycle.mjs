@@ -82,6 +82,13 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       generated_at TEXT NOT NULL
     ) STRICT;
 
+    CREATE TABLE IF NOT EXISTS context_delivery_intents (
+      id TEXT PRIMARY KEY,
+      activation_request_id TEXT NOT NULL UNIQUE REFERENCES activation_requests(id),
+      handover_snapshot_id TEXT NOT NULL UNIQUE REFERENCES handover_snapshots(id),
+      created_at TEXT NOT NULL
+    ) STRICT;
+
     CREATE TABLE IF NOT EXISTS context_delivery_attempts (
       id TEXT PRIMARY KEY,
       activation_request_id TEXT NOT NULL REFERENCES activation_requests(id),
@@ -140,6 +147,10 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       BEGIN SELECT RAISE(ABORT, 'handover snapshots are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS handover_snapshots_no_delete BEFORE DELETE ON handover_snapshots
       BEGIN SELECT RAISE(ABORT, 'handover snapshots are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS delivery_intents_no_update BEFORE UPDATE ON context_delivery_intents
+      BEGIN SELECT RAISE(ABORT, 'delivery intents are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS delivery_intents_no_delete BEFORE DELETE ON context_delivery_intents
+      BEGIN SELECT RAISE(ABORT, 'delivery intents are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS delivery_attempts_no_update BEFORE UPDATE ON context_delivery_attempts
       BEGIN SELECT RAISE(ABORT, 'delivery attempts are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS delivery_attempts_no_delete BEFORE DELETE ON context_delivery_attempts
@@ -244,13 +255,17 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     listDeliveryAttempts(sessionId) {
       ensureOpen();
       return db.prepare(`
-        SELECT d.id, d.activation_request_id AS activationRequestId,
-          d.handover_snapshot_id AS handoverSnapshotId, d.outcome,
+        SELECT COALESCE(d.id, i.id) AS id, i.id AS deliveryId,
+          r.id AS activationRequestId, i.handover_snapshot_id AS handoverSnapshotId,
+          COALESCE(d.outcome, 'unknown') AS outcome,
           d.acknowledgement_level AS acknowledgementLevel,
-          d.provider_reference AS providerReference, d.attempted_at AS attemptedAt
-        FROM context_delivery_attempts d
-        JOIN activation_requests r ON r.id = d.activation_request_id
-        WHERE r.session_id = ? ORDER BY d.rowid
+          d.provider_reference AS providerReference,
+          COALESCE(d.attempted_at, i.created_at) AS attemptedAt,
+          CASE WHEN d.id IS NULL THEN 1 ELSE 0 END AS unresolved
+        FROM context_delivery_intents i
+        JOIN activation_requests r ON r.id = i.activation_request_id
+        LEFT JOIN context_delivery_attempts d ON d.activation_request_id = r.id
+        WHERE r.session_id = ? ORDER BY i.rowid
       `).all(requiredText(sessionId, 'sessionId'));
     },
 
@@ -282,9 +297,15 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         const pending = db.prepare(`
           SELECT 1 FROM activation_requests r
           WHERE r.session_id = ?
-            AND NOT EXISTS (
-              SELECT 1 FROM context_delivery_attempts d
-              WHERE d.activation_request_id = r.id
+            AND (
+              NOT EXISTS (
+                SELECT 1 FROM context_delivery_attempts d
+                WHERE d.activation_request_id = r.id
+              )
+              OR EXISTS (
+                SELECT 1 FROM context_delivery_attempts d
+                WHERE d.activation_request_id = r.id AND d.outcome = 'unknown'
+              )
             )
           LIMIT 1
         `).get(session);
@@ -393,6 +414,10 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         throw new TypeError('providerAdapter must support context delivery');
       }
 
+      const handover = continuityStore.buildHandover(project);
+      const handoverId = randomUUID();
+      const deliveryId = randomUUID();
+      const generatedAt = requiredText(handover.generatedAt, 'handover.generatedAt');
       withTransaction(db, () => {
         const active = db.prepare(`
           SELECT 1 FROM project_activations a
@@ -406,16 +431,17 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         if (active) {
           throw new Error('Session already has an active Project Activation; switching is not yet supported');
         }
-        const priorDelivery = db.prepare(
+        const priorIntent = db.prepare(
+          'SELECT 1 FROM context_delivery_intents WHERE activation_request_id = ? LIMIT 1',
+        ).get(request);
+        if (priorIntent) {
+          throw new Error('Delivery intent already exists; automatic retry is prohibited');
+        }
+        const priorAttempt = db.prepare(
           'SELECT 1 FROM context_delivery_attempts WHERE activation_request_id = ? LIMIT 1',
         ).get(request);
-        if (priorDelivery) throw new Error('Activation request already has a recorded delivery outcome');
-      });
+        if (priorAttempt) throw new Error('Activation request already has a recorded delivery outcome');
 
-      const handover = continuityStore.buildHandover(project);
-      const handoverId = randomUUID();
-      const generatedAt = requiredText(handover.generatedAt, 'handover.generatedAt');
-      withTransaction(db, () => {
         db.prepare(`
           INSERT INTO handover_snapshots
             (id, session_id, activation_request_id, project_id, format,
@@ -425,10 +451,21 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           handoverId, session, request, project, handover.format,
           handover.lastRecordedActivityAt, JSON.stringify(handover), generatedAt,
         );
+        db.prepare(`
+          INSERT INTO context_delivery_intents
+            (id, activation_request_id, handover_snapshot_id, created_at)
+          VALUES (?, ?, ?, ?)
+        `).run(deliveryId, request, handoverId, generatedAt);
         appendEvent({
           sessionId: session, eventType: 'handover_prepared', projectId: project,
           activationRequestId: request, handoverSnapshotId: handoverId,
           summary: 'Fresh handover prepared for project ' + project,
+          occurredAt: generatedAt,
+        });
+        appendEvent({
+          sessionId: session, eventType: 'delivery_intent_persisted', projectId: project,
+          activationRequestId: request, handoverSnapshotId: handoverId,
+          summary: 'Delivery intent persisted: ' + deliveryId,
           occurredAt: generatedAt,
         });
       });
@@ -436,6 +473,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       let delivery;
       try {
         delivery = await providerAdapter.deliver({
+          deliveryId,
+          idempotencyKey: deliveryId,
           handover: { id: handoverId, projectId: project, payload: handover },
           activationRequestId: request,
         });
@@ -444,6 +483,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       }
 
       const matches = delivery
+        && delivery.deliveryId === deliveryId
         && delivery.activationRequestId === request
         && delivery.handoverId === handoverId
         && typeof delivery.attemptId === 'string'
@@ -477,7 +517,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
             : outcome === 'failed' ? 'delivery_failed' : 'delivery_unknown',
           projectId: project, activationRequestId: request,
           handoverSnapshotId: handoverId, deliveryAttemptId: attemptId,
-          summary: 'Provider delivery outcome: ' + outcome,
+          summary: 'Provider delivery outcome: ' + outcome + ' for delivery ' + deliveryId,
           occurredAt: attemptedAt,
         });
 
