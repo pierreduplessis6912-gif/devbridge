@@ -65,11 +65,12 @@ test('simulated provider returns deterministic acknowledged, failed and unknown 
   assert.equal(acknowledged.provesModelComprehension, false);
 });
 
-test('simulated provider echoes the stable delivery ID and rejects an exhausted outcome script', async () => {
+test('simulated provider echoes a delivery ID but does not claim idempotent delivery', async () => {
   const provider = createSimulatedProvider({
     outcomes: ['failed', 'acknowledged'],
   });
   const handover = { id: 'handover-b-1', projectId: 'project-b' };
+  assert.equal(provider.capabilities.idempotentDelivery, undefined);
 
   const first = await provider.deliver({
     deliveryId: 'stable-delivery-b',
@@ -349,6 +350,7 @@ test('SLT-21: provider acceptance followed by process death is never automatical
     // simulate provider acceptance, and terminate before recording the response.
     lifecycle.close();
     store.close();
+    store = null;
     const child = spawnSync(process.execPath, [
       workerPath, databasePath, 'request-recovery', markerPath,
     ], { encoding: 'utf8' });
@@ -391,7 +393,7 @@ test('SLT-21: provider acceptance followed by process death is never automatical
   } finally {
     lifecycle.close();
     reopened?.close();
-    store.close();
+    store?.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -452,6 +454,14 @@ test('overlapping activation requests are serialized across lifecycle handles', 
       providerAdapter: provider,
     });
     await started;
+
+    await assert.rejects(
+      secondLifecycle.activateProject({
+        requestId: 'request-overlap-1',
+        providerAdapter: provider,
+      }),
+      /Delivery intent already exists; automatic retry is prohibited/,
+    );
 
     await assert.rejects(
       secondLifecycle.requestProjectActivation({
