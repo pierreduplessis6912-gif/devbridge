@@ -262,7 +262,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           d.acknowledgement_level AS acknowledgementLevel,
           d.provider_reference AS providerReference,
           COALESCE(d.attempted_at, i.created_at) AS attemptedAt,
-          CASE WHEN d.id IS NULL THEN 1 ELSE 0 END AS unresolved
+          CASE WHEN d.id IS NULL OR d.outcome = 'unknown' THEN 1 ELSE 0 END AS unresolved
         FROM activation_requests r
         LEFT JOIN context_delivery_intents i ON i.activation_request_id = r.id
         LEFT JOIN context_delivery_attempts d ON d.activation_request_id = r.id
