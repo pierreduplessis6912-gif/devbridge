@@ -393,6 +393,33 @@ test('SLT-21: provider acceptance followed by process death is never automatical
     );
     assert.equal(reopened.listDeliveryAttempts('session-recovery')[0].deliveryId, providerReceipt.deliveryId);
     assert.equal(reopened.getActiveActivation('session-recovery'), null);
+
+    // Recovery is a separately authorised activation in a fresh DevBridge Session.
+    reopened.createSession({ id: 'session-recovery-fresh' });
+    reopened.requestProjectActivation({
+      sessionId: 'session-recovery-fresh',
+      projectId: 'project-recovery',
+      requestId: 'request-recovery-fresh',
+    });
+    await reopened.confirmProjectActivation({
+      requestId: 'request-recovery-fresh',
+      confirmationToken: authority.issue({
+        requestId: 'request-recovery-fresh',
+        sessionId: 'session-recovery-fresh',
+        projectId: 'project-recovery',
+      }),
+    });
+    const freshActivation = await reopened.activateProject({
+      requestId: 'request-recovery-fresh',
+      providerAdapter: createSimulatedProvider(),
+    });
+    assert.equal(freshActivation.status, 'active');
+    const originalUnknown = reopened.listDeliveryAttempts('session-recovery')[0];
+    const freshDelivery = reopened.listDeliveryAttempts('session-recovery-fresh')[0];
+    assert.equal(originalUnknown.outcome, 'unknown');
+    assert.equal(originalUnknown.deliveryId, providerReceipt.deliveryId);
+    assert.notEqual(freshDelivery.deliveryId, originalUnknown.deliveryId);
+    assert.equal(reopened.getActiveActivation('session-recovery-fresh').projectId, 'project-recovery');
   } finally {
     lifecycle.close();
     reopened?.close();
