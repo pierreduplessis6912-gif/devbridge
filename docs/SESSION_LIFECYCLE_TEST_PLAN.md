@@ -138,24 +138,6 @@ Inject failure between lifecycle steps, especially:
 
 Reopen the store in a fresh process or fresh store instance and verify that recovery produces an explicit, consistent state. It must not invent success or lose recorded history.
 
-### SLT-22 — Confirmation is authenticated, bound and single-use
-
-Exercise the confirmation boundary with a pending activation request.
-
-Assert that:
-- A valid authenticated user confirmation for the exact request, Session and Project is accepted and its actor/provenance is recorded.
-- An unauthenticated request is rejected.
-- A provider/model-originated confirmation claim is rejected.
-- Caller-supplied confirmation fields without a verified trusted-boundary result are rejected.
-- A confirmation bound to another request, Session or Project is rejected.
-- A replayed or already-consumed confirmation is rejected.
-- Rejected confirmation causes no handover delivery and no Project Activation.
-- The test-only simulated confirmation adapter is explicitly isolated from production authentication code.
-
-### SLT-22 — Confirmation is authenticated, bound and single-use
-
-Exercise the injected confirmation-authority boundary with the test-only simulated authority. Verify that forged tokens, mismatched request/session/project scope, and repeated confirmation are rejected; confirmation evidence is stored separately and append-only; activation cannot proceed without a verified confirmation; and the authenticated actor/method/reference are preserved. This test authority is not production authentication.
-
 ### SLT-21 — Unknown delivery is never automatically replayed
 
 Create and persist a delivery intent with a stable delivery identifier. Simulate provider acceptance followed by process termination before DevBridge records the acknowledgement. Reopen the lifecycle store in a fresh process.
@@ -167,6 +149,10 @@ Assert that:
 - A retry of the same logical delivery is allowed only when the adapter contract proves idempotency for that same identifier, or provider reconciliation establishes that the earlier delivery was not accepted.
 - If neither condition can be established, the original attempt remains Unknown and recovery requires a separately authorised safe path, such as a new provider session and a newly prepared handover.
 - A new-session recovery does not rewrite or erase the original unknown attempt.
+
+### SLT-22 — Confirmation is authenticated, bound and single-use
+
+Exercise the injected confirmation-authority boundary with the test-only simulated authority. Verify that forged tokens, mismatched request/session/project scope, and repeated confirmation are rejected; confirmation evidence is stored separately and append-only; activation cannot proceed without a verified confirmation; and the authenticated actor/method/reference are preserved. This test authority is not production authentication.
 
 ### SLT-17 — Staleness boundary correctness
 
