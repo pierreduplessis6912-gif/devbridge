@@ -46,6 +46,25 @@ Every acceptance scenario must preserve these rules:
 
 ## 4. Acceptance scenarios
 
+### SLA-13 — Project confirmation must be authenticated, exact and single-use
+
+**Given**
+- Session S has a pending activation request R for Project A.
+- The user is authenticated through a trusted DevBridge interface.
+
+**When**
+- The authenticated user explicitly confirms R for Project A.
+
+**Then**
+- The confirmation is bound to R, S and Project A.
+- DevBridge records the authenticated actor, confirmation method and time.
+- The confirmation can authorise only R and cannot be replayed for another request, Session or Project.
+
+**And**
+- A provider/model message, background process, ordinary API caller, unauthenticated client, or caller-supplied confirmation fields cannot authorise activation.
+- A forged, mismatched, expired or replayed confirmation is rejected and does not trigger handover delivery or activation.
+- A test-only simulated confirmation mechanism is never represented as production authentication.
+
 ### SLA-01 — Initial activation requires confirmation and acknowledged delivery
 
 **Given**
@@ -269,6 +288,16 @@ The implementation and test suite must additionally establish:
 - The implementation discloses when provider capability cannot establish the required acknowledgement.
 
 These requirements are intentionally expressed as observable integrity properties. Physical constraints and transaction boundaries remain implementation decisions.
+
+### Additional confirmation trust-boundary requirements
+
+- Unauthenticated confirmation is rejected.
+- A confirmation issued for one activation request cannot be used for another request.
+- A confirmation for one Project or Session cannot authorise another.
+- Provider-originated statements and ordinary application/API parameters cannot substitute for an authenticated user action.
+- Replayed confirmation tokens/results are rejected.
+- The authenticated actor and confirmation provenance are preserved in lifecycle history.
+- Test fixtures clearly distinguish simulated confirmation from production authentication.
 
 ## 6. Test evidence standard
 
