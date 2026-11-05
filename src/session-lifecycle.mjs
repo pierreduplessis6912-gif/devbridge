@@ -255,13 +255,13 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     listDeliveryAttempts(sessionId) {
       ensureOpen();
       return db.prepare(`
-        SELECT COALESCE(d.id, i.id) AS id, i.id AS deliveryId,
+        SELECT d.id, i.id AS deliveryId,
           r.id AS activationRequestId,
           COALESCE(i.handover_snapshot_id, d.handover_snapshot_id) AS handoverSnapshotId,
           COALESCE(d.outcome, 'unknown') AS outcome,
           d.acknowledgement_level AS acknowledgementLevel,
           d.provider_reference AS providerReference,
-          COALESCE(d.attempted_at, i.created_at) AS attemptedAt,
+          d.attempted_at AS attemptedAt, i.created_at AS intentCreatedAt,
           CASE WHEN d.id IS NULL OR d.outcome = 'unknown' THEN 1 ELSE 0 END AS unresolved
         FROM activation_requests r
         LEFT JOIN context_delivery_intents i ON i.activation_request_id = r.id
