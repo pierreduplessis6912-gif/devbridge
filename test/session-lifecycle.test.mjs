@@ -312,6 +312,24 @@ test('confirmation tokens are trusted, exact, single-use and cannot be forged', 
     });
     assert.equal(activated.status, 'active');
     assert.equal(lifecycle.listActivations('session-confirm').length, 1);
+
+    const inspect = new DatabaseSync(databasePath);
+    try {
+      assert.throws(
+        () => inspect.prepare(
+          "UPDATE activation_confirmations SET actor_id = 'forged' WHERE activation_request_id = ?",
+        ).run('request-confirm'),
+        /append-only/,
+      );
+      assert.throws(
+        () => inspect.prepare(
+          'DELETE FROM activation_confirmations WHERE activation_request_id = ?',
+        ).run('request-confirm'),
+        /append-only/,
+      );
+    } finally {
+      inspect.close();
+    }
   } finally {
     lifecycle.close();
     store.close();
@@ -371,6 +389,24 @@ test('SLT-21: provider acceptance followed by process death is never automatical
     assert.equal(attempts[0].id, null);
     assert.equal(attempts[0].attemptedAt, null);
     assert.equal(typeof attempts[0].intentCreatedAt, 'string');
+
+    const inspect = new DatabaseSync(databasePath);
+    try {
+      assert.throws(
+        () => inspect.prepare(
+          "UPDATE context_delivery_intents SET created_at = 'changed' WHERE id = ?",
+        ).run(providerReceipt.deliveryId),
+        /append-only/,
+      );
+      assert.throws(
+        () => inspect.prepare(
+          'DELETE FROM context_delivery_intents WHERE id = ?',
+        ).run(providerReceipt.deliveryId),
+        /append-only/,
+      );
+    } finally {
+      inspect.close();
+    }
 
     await assert.rejects(
       reopened.activateProject({
