@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../src/store.mjs';
 import { openSessionLifecycle } from '../src/session-lifecycle.mjs';
@@ -316,33 +318,16 @@ test('confirmation tokens are trusted, exact, single-use and cannot be forged', 
   }
 });
 
-test('SLT-21: interrupted delivery remains unknown and is never automatically replayed', async () => {
+test('SLT-21: provider acceptance followed by process death is never automatically replayed', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-delivery-recovery-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
-  const store = openStore(databasePath);
+  const markerPath = join(directory, 'provider-accepted.json');
+  const workerPath = fileURLToPath(new URL('../test-support/delivery-crash-worker.mjs', import.meta.url));
   const authority = createSimulatedConfirmationAuthority();
+  let store = openStore(databasePath);
   let lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
-  let deliveryCalls = 0;
-  let deliveryStarted;
-  const started = new Promise((resolve) => { deliveryStarted = resolve; });
-  let observedDeliveryId = null;
-  const provider = {
-    capabilities: {
-      contextDelivery: true,
-      acknowledgementLevel: 'payload_accepted',
-      provesModelComprehension: false,
-    },
-    async deliver({ deliveryId, idempotencyKey }) {
-      assert.equal(idempotencyKey, deliveryId);
-      deliveryCalls += 1;
-      observedDeliveryId = deliveryId;
-      deliveryStarted();
-      // Simulate the process stopping while the provider outcome is unresolved.
-      return new Promise(() => {});
-    },
-  };
-
   let reopened;
+
   try {
     store.createProject({ id: 'project-recovery', name: 'Recovery project' });
     lifecycle.createSession({ id: 'session-recovery' });
@@ -360,30 +345,38 @@ test('SLT-21: interrupted delivery remains unknown and is never automatically re
       }),
     });
 
-    // Intentionally not awaited: this models process loss after provider call starts.
-    lifecycle.activateProject({
-      requestId: 'request-recovery',
-      providerAdapter: provider,
-    });
-    await started;
-    assert.equal(typeof observedDeliveryId, 'string');
+    // Close the parent handles, then let a child process persist the intent,
+    // simulate provider acceptance, and terminate before recording the response.
     lifecycle.close();
+    store.close();
+    const child = spawnSync(process.execPath, [
+      workerPath, databasePath, 'request-recovery', markerPath,
+    ], { encoding: 'utf8' });
+    assert.equal(child.error, undefined);
+    assert.equal(child.status, 73);
 
+    const providerReceipt = JSON.parse(readFileSync(markerPath, 'utf8'));
+    assert.equal(providerReceipt.providerAccepted, true);
+    assert.equal(typeof providerReceipt.deliveryId, 'string');
+
+    store = openStore(databasePath);
     reopened = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
     const attempts = reopened.listDeliveryAttempts('session-recovery');
     assert.equal(attempts.length, 1);
-    assert.equal(attempts[0].deliveryId, observedDeliveryId);
+    assert.equal(attempts[0].deliveryId, providerReceipt.deliveryId);
     assert.equal(attempts[0].outcome, 'unknown');
     assert.equal(attempts[0].unresolved, 1);
 
     await assert.rejects(
       reopened.activateProject({
         requestId: 'request-recovery',
-        providerAdapter: provider,
+        providerAdapter: {
+          capabilities: { contextDelivery: true, acknowledgementLevel: 'payload_accepted' },
+          async deliver() { throw new Error('Provider must not be called again'); },
+        },
       }),
       /Delivery intent already exists; automatic retry is prohibited/,
     );
-    assert.equal(deliveryCalls, 1);
 
     assert.throws(
       () => reopened.requestProjectActivation({
@@ -393,7 +386,7 @@ test('SLT-21: interrupted delivery remains unknown and is never automatically re
       }),
       /unresolved activation request/,
     );
-    assert.equal(deliveryCalls, 1);
+    assert.equal(reopened.listDeliveryAttempts('session-recovery')[0].deliveryId, providerReceipt.deliveryId);
     assert.equal(reopened.getActiveActivation('session-recovery'), null);
   } finally {
     lifecycle.close();
