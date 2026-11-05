@@ -138,6 +138,20 @@ Inject failure between lifecycle steps, especially:
 
 Reopen the store in a fresh process or fresh store instance and verify that recovery produces an explicit, consistent state. It must not invent success or lose recorded history.
 
+### SLT-22 — Confirmation is authenticated, bound and single-use
+
+Exercise the confirmation boundary with a pending activation request.
+
+Assert that:
+- A valid authenticated user confirmation for the exact request, Session and Project is accepted and its actor/provenance is recorded.
+- An unauthenticated request is rejected.
+- A provider/model-originated confirmation claim is rejected.
+- Caller-supplied confirmation fields without a verified trusted-boundary result are rejected.
+- A confirmation bound to another request, Session or Project is rejected.
+- A replayed or already-consumed confirmation is rejected.
+- Rejected confirmation causes no handover delivery and no Project Activation.
+- The test-only simulated confirmation adapter is explicitly isolated from production authentication code.
+
 ### SLT-21 — Unknown delivery is never automatically replayed
 
 Create and persist a delivery intent with a stable delivery identifier. Simulate provider acceptance followed by process termination before DevBridge records the acknowledgement. Reopen the lifecycle store in a fresh process.
