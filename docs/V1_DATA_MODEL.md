@@ -194,22 +194,17 @@ DevBridge does not decide which contributor is correct, whether a decision is go
 
 ## 5. Current project state and handover
 
-The current project snapshot and an AI handover are derived views assembled from Project Records and Historical Events.
+The current project snapshot and an AI handover are derived views assembled from Project Records and Historical Events. They are not replacements for the underlying records.
 
-They are not replacements for the underlying records.
+The initial handover contract is defined in [HANDOVER_CONTRACT.md](HANDOVER_CONTRACT.md). It separates three layers:
 
-A context package should be able to include:
-- Project identity and purpose.
-- The current recorded project position.
-- Relevant user contributions and decisions.
-- Relevant AI contributions and proposals.
-- Agreements, commitments and status information.
-- Unresolved disagreements or questions.
-- Recent changes.
-- References to relevant sources.
-- Last recorded update and known capture gaps.
+1. **Project kernel:** initially only stable project identity, name and user-provided purpose. Enduring principles remain empty unless the user explicitly marks them as such through a future supported action.
+2. **Current recorded state:** a transparent index over included records, grouped by category, with explicit unresolved, reported-status and superseded-record references. It does not determine correctness, completion or which alternative should prevail.
+3. **Historical record:** attributed records, directional relationships and historical events, with counts and disclosure when bounded output omits older material.
 
-The package should retain references to the records from which it was assembled. Historical material is retrieved when requested or needed; it is not all loaded into every new AI context.
+Every derived reference points back to a stored record. Relationship endpoints outside a bounded record set are identified as omitted rather than silently dropped. User and AI provenance remains attached to the underlying record.
+
+The handover is an entry point. Deeper history can be retrieved when requested or needed; it is not all loaded into every new AI context.
 
 ## 6. Record integrity and synchronisation
 
