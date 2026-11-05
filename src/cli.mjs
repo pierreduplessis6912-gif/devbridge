@@ -71,7 +71,7 @@ function main(args) {
       }));
       return;
     }
-    if (command === 'project' && subcommand === 'list' && rest.length === 0) {
+    if (command === 'project' && subcommand === 'list' && Object.keys(options).every((key) => key === 'db')) {
       output(store.listProjects());
       return;
     }
