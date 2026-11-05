@@ -1,6 +1,5 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { openStore } from './store.mjs';
 
 const HELP = `DevBridge local continuity CLI
@@ -41,14 +40,14 @@ function required(options, key) {
 
 function positiveLimit(value, fallback = 50) {
   if (value === undefined) return fallback;
-  if (!/^\\d+$/.test(value) || Number(value) < 1 || !Number.isSafeInteger(Number(value))) {
+  if (!/^\d+$/.test(value) || Number(value) < 1 || !Number.isSafeInteger(Number(value))) {
     throw new Error('--limit must be a positive safe integer');
   }
   return Number(value);
 }
 
 function output(value) {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\\n`);
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
 function main(args) {
@@ -100,7 +99,7 @@ function main(args) {
       }));
       return;
     }
-    throw new Error(`Unknown command: ${args.slice(0, 2).join(' ')}\\nRun with "help" to see usage.`);
+    throw new Error(`Unknown command: ${args.slice(0, 2).join(' ')}\nRun with "help" to see usage.`);
   } finally {
     store.close();
   }
@@ -109,6 +108,6 @@ function main(args) {
 try {
   main(process.argv.slice(2));
 } catch (error) {
-  process.stderr.write(`DevBridge: ${error.message}\\n`);
+  process.stderr.write(`DevBridge: ${error.message}\n`);
   process.exitCode = 1;
 }
