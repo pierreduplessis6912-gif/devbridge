@@ -8,6 +8,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "devbridge": "node src/cli.mjs"
   }
 }
