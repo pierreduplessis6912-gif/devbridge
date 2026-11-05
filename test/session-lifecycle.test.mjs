@@ -517,7 +517,7 @@ test('overlapping activation requests are serialized across lifecycle handles', 
   }
 });
 
-test('mismatched provider acknowledgement remains unresolved and blocks continuation', async () => {
+test('SLT-14: mismatched provider acknowledgement remains unresolved and blocks continuation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-ack-mismatch-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
   const store = openStore(databasePath);
