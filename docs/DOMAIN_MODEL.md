@@ -1,371 +1,371 @@
 # DevBridge — Domain Model
 
-**Version:** 0.1  
-**Status:** Proposed  
+**Version:** 0.2  
+**Status:** Proposed conceptual reference, aligned with agreed v1 scope  
 **Stage:** Architecture and discovery  
-**Parent document:** [Product and Architecture Foundation](FOUNDATION.md)
+**Primary scope authority:** [V1 Scope](V1_SCOPE.md)  
+**Data-model detail:** [V1 Data Model](V1_DATA_MODEL.md)  
+**Session lifecycle detail:** [Session Lifecycle Design](SESSION_LIFECYCLE_DESIGN.md)
 
 ---
 
-## 1. Purpose
+## 1. Purpose and authority
 
-This document defines the conceptual domain model for DevBridge.
+This document describes the concepts and boundaries that make up DevBridge. It is a conceptual reference, not an implementation specification.
 
-It identifies the durable objects, their responsibilities, relationships and important boundaries.
+Where an older concept in this document conflicts with the agreed v1 scope, data model or session lifecycle design, those v1 documents take precedence.
 
-It is deliberately independent of any database engine, programming language, framework or AI provider.
+DevBridge is a bridge for preserving and transferring development context. The user and the AI instances they choose do the building. DevBridge records and presents authorised, meaningful project context; it does not own the project or direct its technical work.
 
-The domain model must preserve the central DevBridge principle:
+The guiding principles are:
 
-> The project is permanent. The AI is replaceable. The environment is persistent.
+> Facilitate, don't dictate. Observe, don't interfere. Preserve, don't own.
 
-The model must not make project knowledge dependent on a particular AI conversation, provider or model.
+The product promise is:
 
----
+> You can outgrow your AI instance without outgrowing your project.
 
-## 2. Core domain objects
+The project must not derive its identity or continuity from a particular AI conversation, provider, model, device, filesystem path, repository or execution environment.
+
+This document does not prescribe a database engine, schema, API, storage mechanism or provider implementation.
+
+## 2. Core domain concepts
 
 ### 2.1 Project
 
-A Project is the permanent container for a development initiative.
+A Project is the durable identity and continuity boundary for a development initiative.
 
-It owns or references the information required to continue work across sessions, providers and environments.
+It can exist before a repository, local workspace or AI session is connected. It remains meaningful when devices, workspaces, repositories or provider conversations are unavailable or replaced.
 
-Responsibilities:
-- Project identity and metadata.
-- Repository associations.
-- Workspace associations.
-- Tasks and project activity.
-- Evidence and decisions.
-- Project-level configuration and memory.
+A Project provides the context boundary for:
+- Its identity, user-provided name and purpose.
+- Its recorded contributions, decisions, requirements and project history.
+- Its explicit repository and workspace associations.
+- Its sessions and project activations.
+- Its current recorded state and generated handovers.
 
-A Project must remain meaningful even when every AI session has ended.
+A Project does not mean DevBridge owns the project's files, code, infrastructure or external accounts.
 
 ### 2.2 Repository
 
-A Repository represents a source-control repository associated with a Project.
+A Repository identifies a source-control repository independently of any one Project or local checkout.
 
-It identifies the Git repository and its remote identity.
+A repository may be associated with a Project, but Git is optional. A Project may exist and retain useful continuity without any repository.
 
-Responsibilities:
-- Repository identity.
-- Remote URL and hosting information.
-- Default branch and relevant source-control metadata.
-- Association with local workspaces.
+Project-to-Repository association is explicit. A single repository may be associated with more than one Project only through separately established associations. Such an association does not automatically share:
+- Project memory or continuity records.
+- Project permissions or authorisations.
+- Credentials or secrets.
+- Decisions, contributions or evidence belonging to another Project.
 
-A repository is not the same thing as a workspace. One repository may have multiple working copies.
+An association may record project-specific context such as the repository's role or purpose for that Project.
 
-### 2.3 Workspace
+DevBridge may retain repository identity and association metadata. It does not become the repository host or source of truth for repository contents.
 
-A Workspace represents a working environment in which repository content is available for inspection or modification.
+### 2.3 Workspace and local project environment
 
-Examples:
+A Workspace is a reference to a particular working environment or working copy associated with a Project and, where relevant, a Repository.
+
+Examples may include:
 - A local checkout.
-- A separate working directory.
-- A future Git worktree.
-- A controlled execution environment.
+- A working directory on a device.
+- A separate worktree.
+- A remote or hybrid working environment in a future integration.
 
-Responsibilities:
-- Identify the working location.
-- Record the repository and checkout relationship.
-- Record relevant branch and revision information.
-- Establish the context in which changes and executions occur.
+A Workspace is not the Project and does not determine Project identity. Device identifiers, filesystem paths, branches and checkout locations are environment details that may change.
 
-A workspace must not automatically imply permission to execute arbitrary commands.
+Project documents and continuity records must be conceptually independent of a Git checkout. The Project can exist before any Workspace or Repository is attached.
 
-### 2.4 Task
+DevBridge is not the file-hosting provider for project files. Files remain in storage selected and controlled by the user; DevBridge may retain authorised references and recorded context about them.
 
-A Task is a durable unit of work within a Project.
+### 2.4 Device, platform and execution environment
 
-It survives the end of any individual AI session.
+A Device is a place where a user may access DevBridge or work on a Project. A Platform describes the operating-system and device capabilities available there. An Execution Environment is where development tools or project operations may run.
 
-Responsibilities:
-- Describe the intended outcome.
-- Record scope and constraints.
-- Track status and progress.
-- Link relevant evidence and decisions.
-- Link sessions that contributed to the work.
-- Record proposed changes and completed work.
+These are environment concepts, not Project identity.
 
-A Task may be resumed by a different provider or model.
+#### Platform independence
 
-Task status and session status are separate concepts.
+DevBridge is designed to support phone-based development, initially targeting Android devices generally. Its core domain must not depend on:
+- A specific phone manufacturer or device model.
+- Manufacturer-specific APIs.
+- A particular screen size or hardware configuration.
+
+The architecture should preserve the possibility of supporting other platforms without making them v1 requirements.
+
+#### Termux as an initial adapter
+
+Termux is the initial development and execution environment used to build and test DevBridge. It is an adapter and deployment choice, not the foundation of the domain model.
+
+The core must not assume that every supported device has Termux, uses the same filesystem, or supports the same runtimes and native dependencies. Platform-specific capabilities belong behind appropriate adapters.
+
+#### Capability-aware operation
+
+An environment or integration should declare the capabilities it actually makes available. Depending on the environment, these may include:
+- Available storage and memory.
+- Supported runtimes and native dependencies.
+- Git availability.
+- Network connectivity.
+- Background execution support.
+- Available local or remote execution options.
+
+The product should communicate capability and availability honestly. It must not assume that all devices or environments are equivalent, or imply that an unavailable capability exists.
+
+The user interface, project context and execution environment are separate architectural responsibilities. Execution may initially happen locally through Termux; a future remote or hybrid environment should not change Project identity or ownership.
+
+Execution and command-running are not DevBridge v1 product responsibilities. Environment capability concepts do not grant DevBridge authority to execute commands, modify files, run tests or deploy projects.
+
+Project data should be portable and recoverable when a device is replaced, lost or unavailable. Local-first operation is the initial architectural direction; backup, restoration and future synchronisation must be considered. Local-only project files cannot be recovered by DevBridge unless an available user-controlled source or backup contains them.
 
 ### 2.5 Session
 
-A Session represents a temporary interaction with an AI provider.
+A DevBridge Session is a record of a period of interaction involving an AI provider, model or other supported participant. It is distinct from the provider's own conversation or chat identifier.
 
-It records the context in which an assistant participated in project work.
+A Session:
+- Records the provider and model when known.
+- May record an external conversation identifier when the provider exposes one reliably.
+- Has its own lifecycle and provenance.
+- May include multiple ordered Project Activations over its lifetime.
+- Preserves references to the context delivered and contributions recorded during it.
 
-Responsibilities:
-- Identify the provider and model used.
-- Associate the interaction with a Project.
-- Optionally associate it with a Task.
-- Record session lifecycle and relevant outputs.
-- Preserve references to work produced during the session.
+A Session is not the authoritative location for Project memory. Provider conversations may be recycled, inaccessible or lost without removing the Project's recorded continuity.
 
-A Session may be exploratory and therefore need not belong to a specific Task.
+A returning provider conversation is not assumed to be the same DevBridge session unless a reliable supported identifier establishes that association. Otherwise, DevBridge treats it as a new or not-yet-associated session.
 
-A Session is not the authoritative location for project memory.
+### 2.6 Project Activation
 
-### 2.6 Provider and Model
+A Project Activation represents a period during a Session in which one Project is the confirmed primary context.
 
-A Provider represents an external AI service or supported execution integration.
+A Session may switch from Project A to Project B and later return to Project A. Each activation requires explicit confirmation of the intended Project and a fresh handover based on the latest recorded state.
 
-A Model identifies a particular model offered by a Provider.
+An activation is not complete until the required context has been delivered and acknowledged at the strongest level the provider integration actually supports. If confirmation or delivery acknowledgement fails or is unknown, the transition remains incomplete and DevBridge must not authorise continuation under the unconfirmed Project context.
 
-These are integration concepts, not owners of project data.
+Outgoing checkpoints preserve the outgoing activation's recorded position. They do not close or lock the Project. Returning to a Project requires a fresh handover; an old handover is not reused as if it were current.
 
-Responsibilities:
-- Identify supported providers and models.
-- Describe integration capabilities.
-- Support provider replacement.
-- Keep provider-specific behaviour behind defined interfaces.
+The detailed lifecycle, event types, delivery states and invariants are defined in [Session Lifecycle Design](SESSION_LIFECYCLE_DESIGN.md) and [V1 Data Model](V1_DATA_MODEL.md).
 
-Credentials and secrets must be handled separately from project memory and must never be stored in ordinary evidence, task descriptions or execution logs.
+### 2.7 Provider, Model and Adapter
 
-### 2.7 Evidence
+A Provider is an external AI service or supported integration. A Model identifies a model offered through a Provider. An Adapter is the provider-specific integration boundary through which DevBridge uses supported capabilities.
 
-Evidence is a recorded observation or source-backed fact relevant to a Project or Task.
+Provider and model identities are descriptive integration context; they do not own Project data.
 
-Examples:
-- A file inspected at a particular revision.
-- A test result.
-- A command output.
-- A repository state.
-- A documented external requirement.
-- A user-confirmed fact.
+Each adapter must declare its actual supported capabilities and the meaning of any acknowledgement it returns. Provider capabilities are not assumed to be equal. DevBridge must use documented and authorised interfaces and must not circumvent provider access restrictions or private-chat boundaries.
 
-Evidence must preserve its provenance wherever possible.
+Credentials and secrets must be handled separately from Project continuity records and must never be stored in ordinary contributions, handovers or project descriptions.
 
-Evidence classifications:
-- **Observed:** directly inspected or measured.
-- **Documented:** explicitly stated in an authoritative source.
-- **Decision:** not an evidence classification; decisions are separate records.
-- **Inference:** reasoned conclusion based on available evidence.
-- **Unknown:** information not yet established.
-- **Superseded:** information replaced by newer evidence or a decision.
+### 2.8 Contribution and recorded project information
 
-Evidence must not silently turn an AI assumption into an established fact.
+A Contribution is a meaningful piece of project information submitted by a user, an AI participant or an authorised observation source.
 
-Sensitive credentials and secrets must not be captured in evidence.
+Examples include:
+- A user-stated goal, requirement or constraint.
+- An AI proposal or recommendation.
+- A user challenge, acceptance or rejection.
+- An explicit decision or unresolved question.
+- A reported progress update or status.
+- A documented disagreement or alternative proposal.
+- An authorised observation about project activity.
 
-### 2.8 Decision
+Each record should preserve its provenance, including its origin, source reference where available, timestamp, Project and Session/Activation association where applicable.
 
-A Decision is an explicit choice made or approved by the human project owner.
+Contributions are append-only historical records. Later changes or disagreements do not silently erase earlier contributions. Relationships such as supersedes, supports, contradicts or references may connect records without making DevBridge the judge of their correctness.
 
-Responsibilities:
-- Record what was decided.
-- Record why it was decided.
-- Identify supporting evidence.
-- Record who or what proposed it.
-- Record when it was accepted.
-- Identify whether it remains active or has been superseded.
+DevBridge does not ingest complete private conversation transcripts as a general capability. It records only meaningful information submitted through supported interfaces or observed through explicitly authorised sources.
 
-A proposal from an AI is not an accepted Decision until the required human approval has occurred.
+### 2.9 Evidence, inference and unknowns
 
-### 2.9 Change Set
+Recorded information should distinguish:
+- **Observed:** directly seen or measured by an authorised source.
+- **Documented:** explicitly stated in a referenced source.
+- **User-provided:** supplied by the user.
+- **AI-reported:** stated by an AI participant, without implying independent verification.
+- **Inference:** a reasoned interpretation, attributed to its source.
+- **Unknown:** not established by the available record.
 
-A Change Set is a proposed or completed collection of modifications.
+These labels preserve provenance; they do not certify technical correctness. An AI-reported test result, for example, remains a report unless independently verified by an appropriate source.
 
-It must identify:
-- The Project and relevant Task.
-- The Workspace in which it was prepared.
-- The repository and base revision.
-- The proposed changes.
-- The originating Session, where applicable.
-- Its review and approval status.
+A later contribution may supersede an earlier one, but the earlier record remains part of history. DevBridge does not silently convert an inference into an established fact or decide which competing claim is correct.
 
-A Change Set must be reviewable before execution or application.
+### 2.10 Decision
 
-Approval must refer to the specific proposed change, not merely to a general statement of trust in an AI session.
+A Decision is an explicit choice recorded as having been made by the user or other clearly identified decision-maker.
 
-### 2.10 Approval
+A proposal or recommendation from an AI is not a user decision merely because it was recorded, repeated or implemented in a report. The record should preserve who made the choice, what was chosen, when it was recorded and the relevant supporting or superseded contributions.
 
-An Approval is a human authorization event for a defined action.
+DevBridge preserves the decision and its provenance; it does not decide on the user's behalf or arbitrate between competing technical recommendations.
 
-It records:
-- Who authorized the action.
-- What exact action or Change Set was authorized.
-- The scope of the authorization.
-- When it was granted.
-- Whether it was used, expired or revoked.
+### 2.11 Handover and current recorded state
 
-An approval must not silently expand to cover materially different changes or commands.
+A Handover is a bounded presentation of recorded Project context prepared for a Session or Project Activation.
 
-### 2.11 Execution
+It may contain:
+- Project identity and user-provided purpose.
+- A transparent index of current recorded information within the included history boundary.
+- Relevant attributed contributions and their relationships.
+- Relevant lifecycle or activity events.
+- Explicit completeness and staleness information.
 
-An Execution is a recorded operation performed within an authorized environment.
+A handover is a derived view, not a replacement for append-only source records or a guarantee that all project activity has been captured. It must disclose when history is bounded or information may be missing.
 
-Examples:
-- Running an approved test command.
-- Applying an approved Change Set.
-- Running a build.
-- Performing a permitted repository operation.
+Current-state indexes must be traceable to the records included in that handover. DevBridge must not infer that a task is complete, that a proposal is correct, or that an AI understood a delivered context merely because a handover was prepared or accepted by a provider.
 
-Responsibilities:
-- Record the requested operation.
-- Identify the Workspace.
-- Record the initiating Session or Task where applicable.
-- Identify the applicable authorization.
-- Record the outcome and relevant output.
-- Preserve an auditable history.
+### 2.12 Concurrency and staleness
 
-Execution permissions must be enforced by the environment, not by relying on an AI model to follow instructions.
+Multiple Sessions may contribute to the same Project concurrently. Contributions remain separately attributed to their originating Session, Activation, source and context boundary.
 
-Secrets must be excluded or redacted from execution output.
+When a newer contribution means another active Session may be working from an older handover, DevBridge may record a staleness marker and disclose the possibility of stale context at the next appropriate interaction.
 
----
+DevBridge does not interrupt ongoing work to resolve a semantic disagreement, choose a winning contribution, rank AI providers or reconcile code changes. It preserves the contributions and flags relevant context freshness; the user and their chosen AI decide what to do.
+
+### 2.13 Cross-Project Reference
+
+A Cross-Project Reference records an explicit reference from one Project to another.
+
+A reference does not activate the referenced Project, deliver its handover, or grant access to its memory, files, credentials or permissions. Access and context transfer require their own explicit supported actions.
 
 ## 3. Conceptual relationships
 
-The initial conceptual relationships are:
+The principal v1 relationships are:
 
-- A Project can be associated with one or more Repositories.
-- A Repository can have one or more Workspaces.
-- A Project contains Tasks.
-- A Project can have Sessions.
-- A Session belongs to a Project and may optionally be associated with a Task.
-- A Task can have multiple Sessions over its lifetime.
-- Evidence can relate to a Project, Task, Session, Decision or Execution.
-- Decisions belong to a Project and may relate to Tasks.
-- Change Sets are associated with a Project and a relevant Workspace; they may also relate to a Task and originating Session.
-- Approvals authorize specific actions or Change Sets.
-- Executions occur within a Workspace and must reference the authorization applicable to the operation.
+- A user account may catalogue multiple independent Projects.
+- A Project may exist without a Repository or Workspace.
+- A Project may have explicit associations with one or more Repositories and Workspaces.
+- A Repository may have multiple working copies and may be explicitly associated with more than one Project.
+- A Project has append-only Contributions, recorded relationships, events and derived Handovers.
+- A Session may contain an ordered sequence of Project Activations.
+- A Project Activation identifies one confirmed primary Project for a period within a Session.
+- A Project Activation may reference the handover prepared and delivered for that activation, its delivery attempts and its outgoing checkpoint.
+- A Contribution may be associated with a Project, Session and Activation where applicable; its provenance remains explicit.
+- Multiple Sessions may contribute to the same Project concurrently.
+- A Handover is derived from a bounded set of Project records and events.
+- A Cross-Project Reference links Project identities without merging their continuity or permissions.
+- Provider Adapters expose declared capabilities; Provider and Model identities do not own Project records.
 
 Conceptually:
 
 ```text
-Project
- ├── Repositories
- │    └── Workspaces
- ├── Tasks
- │    └── Sessions
- ├── Sessions (including exploratory sessions)
- ├── Evidence
- ├── Decisions
- └── Activity
-      ├── Change Sets
-      ├── Approvals
-      └── Executions
+Account
+ └── Project catalogue
+      ├── Project A
+      │    ├── Repository associations
+      │    ├── Workspace / environment references
+      │    ├── Contributions and relationships
+      │    ├── Decisions and recorded events
+      │    ├── Handovers
+      │    ├── Sessions
+      │    │    └── Project Activations
+      │    │         ├── Context delivery attempts
+      │    │         └── Outgoing checkpoints
+      │    └── Cross-Project References
+      └── Project B
 
+Provider Adapter
+ ├── Provider
+ ├── Model
+ └── Declared capabilities
+```
 
----
+This diagram is conceptual. It does not prescribe physical tables, ownership implementation or transaction boundaries.
 
 ## 4. Important domain boundaries
 
-### Project knowledge versus conversation history
+### Project versus Repository versus Workspace
 
-Project knowledge must survive deletion, expiry or loss of a provider conversation.
+Project identity and continuity are independent of Git, a checkout, a device and a path. A repository identifies source-control history; a workspace identifies a working environment. Neither becomes the Project.
 
-Conversation history may be useful input, but it is not the authoritative project record.
+### Project continuity versus conversation history
 
-### Repository versus Workspace
+Project continuity is the durable record of meaningful, attributed information. Provider conversation history may be useful but is neither guaranteed to be accessible nor authoritative.
 
-A repository identifies source-control history and remote identity.
+### Session versus Project Activation
 
-A workspace identifies a particular working environment or checkout.
+A Session is a period of provider interaction. A Project Activation is a confirmed period of primary Project context within that Session. One Session may contain multiple activations, including returning to a previously active Project.
 
-They must remain separate concepts.
+### Contribution versus decision
 
-### Task versus Session
+A proposal, report, inference, disagreement and user decision are distinct kinds of recorded information. Recording a proposal does not make it accepted; recording a reported action does not verify its outcome.
 
-A Task describes work that persists.
+### Handover versus archive
 
-A Session describes a temporary AI interaction.
+A Handover is a bounded context view. It is not a complete archive, backup or restore mechanism. Its limits and recorded-context-only status must remain visible.
 
-One Task may span multiple Sessions, and one Project may have exploratory Sessions without Tasks.
+### Provider capability versus product guarantee
 
-### Evidence versus Decision
+An adapter may expose only the capabilities supported by its provider and interface. DevBridge must not claim reliable session identity, context delivery acknowledgement, observation or background operation where the integration cannot establish it.
 
-Evidence describes what is known and how it is known.
+### Facilitation versus control
 
-A Decision records what the project owner chose to do.
+DevBridge preserves and transfers context. It does not decide architecture, arbitrate AI disagreements, manage tasks, prescribe project workflows, execute commands, modify code, run tests, repair code or deploy projects.
 
-An inference must not become a Decision without explicit acceptance.
+## 5. V1 scope boundary
 
-### Proposal versus Approval versus Execution
+The [V1 Scope](V1_SCOPE.md) is authoritative for what the first release includes and excludes.
 
-A proposed change is not authorization.
+The v1 domain focuses on:
+- Account identity and a catalogue of multiple independent Projects.
+- Explicit user-initiated Project creation.
+- Project identity independent of repository, device, path and provider.
+- Optional, explicit Repository and Workspace references.
+- Structured, attributed Contributions and append-only history.
+- Project kernel, current recorded state and bounded Handovers.
+- Sessions and ordered Project Activations with confirmation and delivery lifecycle.
+- One initial AI Provider Adapter, with honest capability declarations.
+- User-controlled source connections and authorised observations.
+- Basic cross-device continuity synchronisation and export/recovery planning.
+- Conversational Project selection and discovery.
 
-Authorization is not execution.
+The following are not v1 domain responsibilities or implementation commitments:
+- Durable Task management or project-management workflows.
+- Change Set generation, code review or automatic file modification.
+- Approval and authorisation workflows for code execution.
+- Shell or command execution, test running, code fixing or deployment.
+- Hosting or ownership of project files.
+- Complete conversation archiving.
+- Mandatory Git or a mandatory local Workspace.
+- Multiple simultaneous provider integrations.
+- Multi-user collaboration and team permissions.
+- Billing and monetisation.
 
-Execution is not proof that the intended result was achieved.
+Some of these may be considered as separate future extensions. Their appearance in an older conceptual model must not be interpreted as approval to include them in v1.
 
-These must remain separately traceable.
+## 6. Security, privacy and integrity boundaries
 
-### AI identity versus project identity
-
-Projects must not be owned by a provider, model or individual AI session.
-
-Provider integrations must be replaceable without losing project history.
-
----
-
-## 5. Initial MVP constraints
-
-The conceptual model allows future expansion, but the first implementation remains deliberately small:
-
-- One developer.
-- One phone.
-- One Project.
-- One Repository.
-- One Workspace.
-- One supported AI integration initially.
-- Durable Tasks and Sessions.
-- Evidence and Decision records.
-- Read-only repository inspection.
-- Proposed changes and human approval.
-- Controlled execution with audit history.
-
-The model may support multiple repositories and workspaces conceptually, but the MVP does not need to implement them.
-
----
-
-## 6. Security invariants
-
-1. Project memory must never contain provider credentials or secrets.
-2. AI instructions are not a security boundary.
-3. Execution permissions must be enforced outside the model.
-4. Every consequential execution must have an applicable authorization.
-5. Authorization must be scoped to the action approved.
-6. Change Sets must be reviewable before approval.
-7. Execution history must distinguish success, failure and unknown outcomes.
-8. Evidence and logs must not expose secrets.
-9. Provider replacement must not require transferring ownership of project data.
-10. Destructive operations must have explicit safeguards and recoverability.
-
-
----
+1. Project identity and continuity must not be owned by a Provider, Model, Session, Device, Repository or Workspace.
+2. Project records and handovers must not contain provider credentials or secrets.
+3. Source connections and observations require explicit user authorisation and supported interfaces.
+4. A reference to another Project does not grant access to it.
+5. Repository association does not automatically share memory, permissions, credentials or decisions.
+6. Contributions and their provenance must remain attributable and historically preserved.
+7. Derived Handovers must disclose their history boundary and must not replace source records.
+8. Provider capability and acknowledgement claims must match what the adapter can actually establish.
+9. Unavailable sources or devices must not erase Project identity or recorded continuity.
+10. DevBridge must not imply it can recover local files that were never synchronised or backed up.
+11. DevBridge v1 does not execute project commands or modify project files; any future execution capability would require a separately approved product and security design.
 
 ## 7. Open architectural questions
 
-These remain unresolved and must be investigated before implementation decisions are locked:
+The following remain open unless resolved in the authoritative v1 design documents:
+- Account and cross-device synchronisation mechanism.
+- Durable storage and recovery guarantees.
+- The exact supported provider and its documented integration capabilities.
+- How authorised environment observations are obtained and represented.
+- How repository and workspace references are discovered, refreshed and marked unavailable.
+- How bounded handovers are sized and how older history is retrieved on demand.
+- How offline changes and synchronisation conflicts are represented without losing provenance.
+- Which Project catalogue and cross-Project discovery operations are appropriate for v1.
 
-- What is the minimum durable project-memory structure?
-- Should structured records, versioned Markdown or a combination be authoritative?
-- How should evidence reference files, commits, command output and external documents?
-- How should project memory be summarized into provider-specific session context?
-- How should concurrent sessions avoid conflicting changes?
-- What is the exact boundary between a Workspace and an execution environment?
-- How should approvals be bound to exact commands, patches and revisions?
-- What recovery and backup guarantees are required?
-- Which provider interfaces can be supported through documented APIs and agent harnesses?
-- How should local and remote state reconcile when the phone is offline?
-
----
+These questions must not be answered by silently expanding DevBridge into a project manager or execution platform.
 
 ## 8. Status and change control
 
-This document is a proposed conceptual model, not an approved implementation specification.
+This is a proposed conceptual reference aligned with the agreed v1 direction. It is not, by itself, an approved implementation specification.
 
-No database schema, storage engine, API contract or execution mechanism is implied by this document.
-
-Changes to the domain model should:
-
+Changes should:
 - Identify the reason for the change.
 - Identify affected concepts and relationships.
-- Preserve the distinction between evidence, inference and decision.
-- Be reviewed against the product foundation.
+- Preserve provenance and the distinction between evidence, inference, report and decision.
+- Be reviewed against [V1 Scope](V1_SCOPE.md), [V1 Data Model](V1_DATA_MODEL.md) and [Session Lifecycle Design](SESSION_LIFECYCLE_DESIGN.md).
 - Be explicitly accepted before becoming an implementation constraint.
 
+No database schema, storage engine, API contract or execution mechanism is implied by this document.
