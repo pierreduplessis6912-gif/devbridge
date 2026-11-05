@@ -132,6 +132,56 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     CREATE INDEX IF NOT EXISTS session_events_order
       ON session_lifecycle_events(session_id, sequence);
 
+    CREATE TRIGGER IF NOT EXISTS activation_confirmations_scope_insert
+      BEFORE INSERT ON activation_confirmations
+      WHEN NOT EXISTS (
+        SELECT 1 FROM activation_requests r
+        WHERE r.id = NEW.activation_request_id
+          AND r.session_id = NEW.session_id
+          AND r.project_id = NEW.project_id
+      )
+      BEGIN SELECT RAISE(ABORT, 'confirmation scope must match activation request'); END;
+    CREATE TRIGGER IF NOT EXISTS delivery_intents_scope_insert
+      BEFORE INSERT ON context_delivery_intents
+      WHEN NOT EXISTS (
+        SELECT 1 FROM activation_requests r
+        JOIN handover_snapshots h ON h.activation_request_id = r.id
+        WHERE r.id = NEW.activation_request_id
+          AND h.id = NEW.handover_snapshot_id
+          AND h.session_id = r.session_id
+          AND h.project_id = r.project_id
+      )
+      BEGIN SELECT RAISE(ABORT, 'delivery intent must match activation request and handover'); END;
+    CREATE TRIGGER IF NOT EXISTS delivery_attempts_intent_insert
+      BEFORE INSERT ON context_delivery_attempts
+      WHEN NOT EXISTS (
+        SELECT 1 FROM context_delivery_intents i
+        WHERE i.activation_request_id = NEW.activation_request_id
+          AND i.handover_snapshot_id = NEW.handover_snapshot_id
+      )
+      BEGIN SELECT RAISE(ABORT, 'delivery attempt must match persisted delivery intent'); END;
+    CREATE TRIGGER IF NOT EXISTS activations_evidence_insert
+      BEFORE INSERT ON project_activations
+      WHEN NOT EXISTS (
+        SELECT 1 FROM activation_requests r
+        JOIN activation_confirmations c ON c.activation_request_id = r.id
+        JOIN handover_snapshots h ON h.activation_request_id = r.id
+        JOIN context_delivery_intents i ON i.activation_request_id = r.id
+        JOIN context_delivery_attempts d ON d.activation_request_id = r.id
+        WHERE r.id = NEW.activation_request_id
+          AND r.session_id = NEW.session_id
+          AND r.project_id = NEW.project_id
+          AND c.session_id = NEW.session_id
+          AND c.project_id = NEW.project_id
+          AND h.id = NEW.handover_snapshot_id
+          AND i.handover_snapshot_id = NEW.handover_snapshot_id
+          AND d.id = NEW.delivery_attempt_id
+          AND d.handover_snapshot_id = NEW.handover_snapshot_id
+          AND d.outcome = 'acknowledged'
+          AND d.acknowledgement_level IS NOT NULL
+      )
+      BEGIN SELECT RAISE(ABORT, 'activation requires matching confirmed acknowledged delivery'); END;
+
     CREATE TRIGGER IF NOT EXISTS sessions_no_update BEFORE UPDATE ON sessions
       BEGIN SELECT RAISE(ABORT, 'sessions are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS sessions_no_delete BEFORE DELETE ON sessions
