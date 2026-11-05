@@ -446,9 +446,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       ensureOpen();
       const request = requiredText(requestId, 'requestId');
       const activationRequest = db.prepare(`
-        SELECT r.id, r.session_id AS sessionId, r.project_id AS projectId,
-          c.actor_id AS confirmedBy, c.confirmation_method AS confirmationMethod,
-          c.confirmed_at AS confirmedAt
+        SELECT r.id, r.session_id AS sessionId, r.project_id AS projectId
         FROM activation_requests r
         JOIN activation_confirmations c ON c.activation_request_id = r.id
         WHERE r.id = ?
