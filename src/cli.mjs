@@ -56,8 +56,10 @@ function main(args) {
     return;
   }
 
-  const [command, subcommand, ...rest] = args;
-  const options = parseOptions(rest);
+  const command = args[0];
+  const subcommand = command === 'handover' ? undefined : args[1];
+  const optionArgs = command === 'handover' ? args.slice(1) : args.slice(2);
+  const options = parseOptions(optionArgs);
   const databasePath = resolve(options.db ?? '.devbridge/devbridge.sqlite');
   mkdirSync(dirname(databasePath), { recursive: true });
   const store = openStore(databasePath);
