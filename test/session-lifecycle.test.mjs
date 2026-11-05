@@ -517,6 +517,70 @@ test('overlapping activation requests are serialized across lifecycle handles', 
   }
 });
 
+test('mismatched provider acknowledgement remains unresolved and blocks continuation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-ack-mismatch-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const provider = {
+    capabilities: {
+      contextDelivery: true,
+      acknowledgementLevel: 'payload_accepted',
+    },
+    async deliver({ deliveryId, handover, activationRequestId }) {
+      return {
+        deliveryId,
+        handoverId: handover.id,
+        activationRequestId,
+        attemptId: 'mismatched-provider-attempt',
+        outcome: 'acknowledged',
+        acknowledgementLevel: 'model_comprehension',
+      };
+    },
+  };
+
+  try {
+    store.createProject({ id: 'project-mismatch', name: 'Mismatch project' });
+    lifecycle.createSession({ id: 'session-mismatch' });
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-mismatch',
+      projectId: 'project-mismatch',
+      requestId: 'request-mismatch',
+    });
+    await lifecycle.confirmProjectActivation({
+      requestId: 'request-mismatch',
+      confirmationToken: authority.issue({
+        requestId: 'request-mismatch',
+        sessionId: 'session-mismatch',
+        projectId: 'project-mismatch',
+      }),
+    });
+
+    const result = await lifecycle.activateProject({
+      requestId: 'request-mismatch',
+      providerAdapter: provider,
+    });
+    assert.equal(result.status, 'blocked');
+    assert.equal(result.reason, 'unknown');
+    assert.equal(lifecycle.getActiveActivation('session-mismatch'), null);
+    assert.equal(lifecycle.listDeliveryAttempts('session-mismatch')[0].outcome, 'unknown');
+    assert.equal(lifecycle.listDeliveryAttempts('session-mismatch')[0].unresolved, 1);
+    assert.throws(
+      () => lifecycle.requestProjectActivation({
+        sessionId: 'session-mismatch',
+        projectId: 'project-mismatch',
+        requestId: 'request-after-mismatch',
+      }),
+      /unresolved activation request/,
+    );
+  } finally {
+    lifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('SLA-04: failed or unknown delivery blocks activation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-failure-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
