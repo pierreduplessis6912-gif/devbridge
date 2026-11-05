@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createSimulatedProvider } from './helpers/simulated-provider.mjs';
+import { createSimulatedProvider } from '../test-support/simulated-provider.mjs';
 
 test('simulated provider declares payload acceptance, not model comprehension', () => {
   const provider = createSimulatedProvider();
