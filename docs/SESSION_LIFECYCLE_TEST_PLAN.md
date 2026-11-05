@@ -1,0 +1,217 @@
+# DevBridge — Session Lifecycle Test Plan
+
+**Version:** 0.1  
+**Status:** Proposed test plan  
+**Branch:** `build/v1-scope`  
+**Acceptance contract:** [Session Lifecycle Acceptance Criteria](SESSION_LIFECYCLE_ACCEPTANCE.md)  
+**Design authority:** [Session Lifecycle Design](SESSION_LIFECYCLE_DESIGN.md)
+
+---
+
+## 1. Objective
+
+Verify that DevBridge enforces the agreed session and project-context lifecycle before connecting a real AI provider.
+
+The test plan begins with a deterministic simulated provider adapter. It must be possible to control delivery outcomes without relying on network access, provider accounts, timing luck or real AI behaviour.
+
+The tests verify DevBridge's own records and guarantees. They do not establish the capabilities of any real provider.
+
+## 2. Test layers
+
+### Layer A — Domain and state-transition tests
+
+Exercise lifecycle rules using an isolated store and deterministic inputs.
+
+Verify:
+- Legal and illegal transition conditions.
+- Session and activation state.
+- Project confirmation.
+- Handover identity and history boundary.
+- Contribution attribution.
+- Checkpoint, delivery and lifecycle-event history.
+- Staleness and concurrency markers.
+
+### Layer B — Simulated-adapter integration tests
+
+Exercise the lifecycle coordinator through an adapter contract with deterministic outcomes:
+- Acknowledged at a declared level.
+- Failed before delivery.
+- Delivery outcome unknown.
+- Retry acknowledged after an earlier failure.
+- Duplicate or mismatched acknowledgement.
+- Adapter capability insufficient to meet the activation requirement.
+
+The simulated adapter must not pretend to prove model comprehension.
+
+### Layer C — End-to-end workflow tests
+
+Exercise complete user-visible sequences using temporary databases:
+- Initial project activation.
+- A → B → A.
+- Failed switch and recovery.
+- Concurrent sessions and deferred refresh.
+- Cross-project reference.
+- Session ending and project persistence.
+
+All test data must be disposable and isolated. Tests must never use a real project database or production service.
+
+## 3. Deterministic test fixtures
+
+Use generated or fixed identifiers and a controllable logical clock/sequence source. Do not rely on sleep calls or timestamp ordering alone.
+
+### Projects
+- Project A with a known initial set of records.
+- Project B with a separate known initial set of records.
+
+### Sessions
+- Session S1 and Session S2, initially unbound.
+- Each Session has an independent lifecycle.
+
+### Contributions
+Use identifiable records such as:
+- A-REC-1: initial Project A requirement.
+- A-REC-2: later Project A contribution, added after S1's handover.
+- B-REC-1: initial Project B decision.
+- S1-REC-1 and S2-REC-1: concurrent contributions with distinct provenance.
+
+### Simulated adapter
+The adapter should accept a prepared handover and return a configured result without making network calls.
+
+Each result must state:
+- Attempt identity.
+- Outcome: acknowledged, failed or unknown.
+- Declared acknowledgement level/capability.
+- Provider-side reference when simulated and useful.
+- A deterministic test sequence value.
+
+Test controls should allow the same scenario to produce different outcomes on successive attempts.
+
+## 4. Scenario-to-test mapping
+
+| Test ID | Acceptance scenario | Core assertions |
+|---|---|---|
+| SLT-01 | SLA-01 Initial activation | No activation before confirmation and acknowledgement; active only after both; exact handover and attempt linked |
+| SLT-02 | SLA-02 Switch A → B | A checkpoint persists; B activation waits for acknowledgement; one active primary Project |
+| SLT-03 | SLA-03 Return B → A | New A activation and handover; newer A record included; earlier A handover retained |
+| SLT-04 | SLA-04 Failed/unknown delivery | Target remains inactive; transition blocked; no continuation attributed to target |
+| SLT-05 | SLA-05 Checkpoint survives failure | Outgoing checkpoint and history remain after incoming failure; retry appends attempt |
+| SLT-06 | SLA-06 Contribution attribution | Each record maps to exact active Project, Session and Activation; no active activation rejects continuation |
+| SLT-07 | SLA-07 Staleness detection | New contribution beyond another activation's handover boundary marks that activation potentially stale |
+| SLT-08 | SLA-08 Deferred refresh | Ongoing work not interrupted at marker creation; next continuation pauses; acknowledged fresh delivery required |
+| SLT-09 | SLA-09 Concurrent contributions | Both contributions survive with distinct provenance and context boundaries |
+| SLT-10 | SLA-10 No semantic judgement | Overlap/contradiction does not create winner, discard records or automatic resolution |
+| SLT-11 | SLA-11 Cross-project reference | Reference creates no activation, handover delivery or inherited access |
+| SLT-12 | SLA-12 Session end | Session ends; Project, contributions and lifecycle history remain |
+
+## 5. Additional integrity and fault-injection tests
+
+These tests supplement the twelve main scenarios.
+
+### SLT-13 — Duplicate activation request
+
+Submit the same activation request more than once, including a retry after an interrupted response.
+
+Assert that idempotency rules prevent duplicate active primary activations and that all distinct attempts/events remain traceable.
+
+### SLT-14 — Acknowledgement mismatch
+
+Return an acknowledgement for a different handover, activation request or delivery attempt.
+
+Assert that it cannot activate the requested Project.
+
+### SLT-15 — Cross-session/project reference integrity
+
+Attempt to attach:
+- An activation from S1 to a handover for the wrong Project.
+- A contribution from S1 to an activation owned by S2.
+- A checkpoint to an unrelated activation.
+
+Assert that invalid associations are rejected atomically.
+
+### SLT-16 — Interrupted transition
+
+Inject failure between lifecycle steps, especially:
+- After outgoing checkpoint creation.
+- After handover preparation.
+- After delivery attempt creation.
+- After provider acknowledgement but before activation finalisation.
+
+Reopen the store in a fresh process or fresh store instance and verify that recovery produces an explicit, consistent state. It must not invent success or lose recorded history.
+
+### SLT-17 — Staleness boundary correctness
+
+Create multiple activations at different project-history boundaries. Add a contribution and verify only eligible older active activations are marked potentially stale.
+
+Verify that a refresh addresses a marker only when the acknowledged fresh handover includes the relevant newer boundary. A marker must not be cleared merely because a refresh was attempted.
+
+### SLT-18 — Deterministic ordering
+
+Create multiple lifecycle events with equal wall-clock timestamps and delayed/out-of-order supplied timestamps.
+
+Assert that a stable sequence or equivalent ordering mechanism preserves deterministic event order and does not move the recorded Project history boundary backwards.
+
+### SLT-19 — Append-only lifecycle history
+
+Attempt ordinary application-level update/delete operations against lifecycle events, delivery attempts, checkpoints and historical activation events.
+
+Assert that prior outcomes cannot be silently rewritten or deleted.
+
+### SLT-20 — Transaction atomicity
+
+Inject an error during a transition write.
+
+Assert that no partial active activation, orphan handover association, dangling delivery acknowledgement or incomplete checkpoint is left behind. Durable pre-existing history remains intact.
+
+## 6. Test execution and isolation
+
+- Use a fresh temporary SQLite database for each test or test group.
+- Close database handles and remove temporary directories in guaranteed cleanup.
+- Never point tests at the user's default `.devbridge/devbridge.sqlite`.
+- Do not require a real provider, account, API key or network connection.
+- Use deterministic IDs and controllable sequence/time inputs.
+- Avoid timing-dependent sleeps.
+- Verify persisted state after reopening the database.
+- Keep fixtures small but include multiple Projects and Sessions.
+- Include both successful and failed paths.
+
+## 7. Test progression and implementation gates
+
+### Gate 1 — Contract tests
+
+Before changing the physical schema, make the simulated lifecycle interface and expected transitions explicit. Tests should fail against the current implementation because Sessions and Activations are not implemented; this is an expected baseline, not a regression.
+
+### Gate 2 — Minimal lifecycle implementation
+
+Implement the smallest model that passes SLT-01 through SLT-12 and the required integrity checks without adding a real provider integration.
+
+### Gate 3 — Recovery and hardening
+
+Pass SLT-13 through SLT-20, including interrupted writes, idempotency, stale-boundary correctness, ordering and append-only history.
+
+### Gate 4 — Review
+
+Review:
+- Whether every acceptance invariant is enforced by the store, not only by CLI conventions.
+- Whether a fresh process can reconstruct a consistent lifecycle state.
+- Whether provider acknowledgement semantics are explicit and capability-aware.
+- Whether implementation remains inside the v1 responsibility boundary.
+
+Only after this review should selection and investigation of a real provider integration begin.
+
+## 8. Reporting test results
+
+For each run, report:
+- Exact commit and branch.
+- Runtime and platform.
+- Test command.
+- Total, passed and failed tests.
+- Scenario/test IDs covered.
+- Any skipped or unimplemented cases.
+- Whether tests used only temporary disposable databases.
+- Any known limitations.
+
+A green test suite proves only the behaviours it exercises. It does not prove real-provider compatibility, multi-device synchronisation, backup/restore or production readiness.
+
+---
+
+**Test principle:** Prove DevBridge's lifecycle rules with a deterministic adapter before depending on a real provider.
