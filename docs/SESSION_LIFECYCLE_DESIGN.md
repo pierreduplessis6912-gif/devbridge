@@ -299,7 +299,8 @@ No physical schema is prescribed here. The domain model will likely need concept
 - **Session:** DevBridge interaction identity and provider references.
 - **Session context event / project activation:** append-only record of project activation, switch, return, checkpoint and lifecycle transitions.
 - **Handover snapshot:** identity/version of the prepared project context and its included record set.
-- **Context delivery attempt:** provider adapter, capability/acknowledgement level, attempt time and outcome.
+- **Context delivery intent:** immutable pre-call record with a stable delivery ID, exact activation request and handover association.
+- **Context delivery attempt:** provider adapter, capability/acknowledgement level, attempt time and outcome, recorded separately from the pre-call intent.
 - **Contribution:** direct project and session attribution, including the activation/context version.
 - **Concurrency/staleness marker:** observed overlap or stale handover relationship, without a semantic conflict judgement.
 - **Cross-project reference:** explicit reference that does not itself activate or load another project's context.
