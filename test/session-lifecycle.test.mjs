@@ -134,10 +134,11 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
       originType: 'user',
     });
     lifecycle.createSession({ id: 'session-1', providerName: 'simulated-provider' });
+    lifecycle.createSession({ id: 'session-unconfirmed' });
     const provider = createSimulatedProvider({ outcomes: ['acknowledged'] });
 
     lifecycle.requestProjectActivation({
-      sessionId: 'session-1',
+      sessionId: 'session-unconfirmed',
       projectId: 'project-a',
       requestId: 'request-unconfirmed',
     });
@@ -146,8 +147,8 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
       lifecycle.activateProject({ requestId: 'request-unconfirmed', providerAdapter: provider }),
       /requires trusted user confirmation/,
     );
-    assert.equal(lifecycle.getActiveActivation('session-1'), null);
-    assert.equal(lifecycle.listDeliveryAttempts('session-1').length, 0);
+    assert.equal(lifecycle.getActiveActivation('session-unconfirmed'), null);
+    assert.equal(lifecycle.listDeliveryAttempts('session-unconfirmed').length, 0);
 
     lifecycle.requestProjectActivation({
       sessionId: 'session-1',
@@ -214,6 +215,77 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
       /already has an active Project Activation/,
     );
     assert.equal(lifecycle.listActivations('session-1').length, 1);
+  } finally {
+    lifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('confirmation tokens are trusted, exact, single-use and cannot be forged', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-confirmation-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+
+  try {
+    store.createProject({ id: 'project-confirm', name: 'Confirmation project' });
+    store.createProject({ id: 'project-other', name: 'Other project' });
+    lifecycle.createSession({ id: 'session-confirm' });
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-confirm',
+      projectId: 'project-confirm',
+      requestId: 'request-confirm',
+    });
+
+    await assert.rejects(
+      lifecycle.confirmProjectActivation({
+        requestId: 'request-confirm',
+        confirmationToken: 'forged-token',
+      }),
+      /Unknown, forged or already-consumed/,
+    );
+
+    const mismatched = authority.issue({
+      requestId: 'request-confirm',
+      sessionId: 'session-confirm',
+      projectId: 'project-other',
+    });
+    await assert.rejects(
+      lifecycle.confirmProjectActivation({
+        requestId: 'request-confirm',
+        confirmationToken: mismatched,
+      }),
+      /scope does not match/,
+    );
+
+    const valid = authority.issue({
+      requestId: 'request-confirm',
+      sessionId: 'session-confirm',
+      projectId: 'project-confirm',
+      actorId: 'authenticated-test-actor',
+    });
+    const confirmed = await lifecycle.confirmProjectActivation({
+      requestId: 'request-confirm',
+      confirmationToken: valid,
+    });
+    assert.equal(confirmed.actorId, 'authenticated-test-actor');
+
+    await assert.rejects(
+      lifecycle.confirmProjectActivation({
+        requestId: 'request-confirm',
+        confirmationToken: valid,
+      }),
+      /not found or already confirmed/,
+    );
+
+    const provider = createSimulatedProvider();
+    await assert.rejects(
+      lifecycle.activateProject({ requestId: 'request-confirm', providerAdapter: provider }),
+      /already has an active|recorded delivery outcome/,
+    );
+    assert.equal(lifecycle.listActivations('session-confirm').length, 1);
   } finally {
     lifecycle.close();
     store.close();
