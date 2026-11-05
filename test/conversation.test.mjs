@@ -202,10 +202,58 @@ test('preserves a substantive simulated conversation, including challenges, chan
     && link.relationship === 'contradicts'));
 
   const handover = store.buildHandover(project.id);
+  assert.equal(handover.format, 'devbridge-handover-v2');
   assert.equal(handover.recordCountKnown, 13);
   assert.equal(handover.recordCountIncluded, 13);
   assert.equal(handover.hasOlderRecords, false);
   assert.equal(handover.records[0].id, 'turn-01-user-goal');
   assert.equal(handover.records.at(-1).id, 'turn-13-user-no-decision');
   assert.equal(handover.completeness, 'recorded_context_only');
+
+  // The initial kernel is identity and purpose only. No principle is inferred.
+  assert.equal(handover.kernel.projectId, project.id);
+  assert.equal(handover.kernel.name, project.name);
+  assert.equal(handover.kernel.purpose, project.purpose);
+  assert.deepEqual(handover.kernel.principles, []);
+
+  // Current state is an index of stored evidence, not a judgement or resolution.
+  assert.equal(handover.currentState.basis, 'index_of_included_records_only');
+  assert.deepEqual(handover.currentState.recordIdsByCategory.decision, ['turn-05-user-decision']);
+  assert.deepEqual(handover.currentState.unresolvedRecordIds, [
+    'turn-10-user-open-question',
+    'turn-13-user-no-decision',
+  ]);
+  assert.deepEqual(handover.currentState.reportedStatusRecordIds, ['turn-09-ai-progress-report']);
+  assert.deepEqual(handover.currentState.supersededRecordIds, ['turn-06-user-provider-requirement']);
+
+  // The handover carries the relationship graph and preserves edge direction.
+  assert.equal(handover.history.relationships.length, 12);
+  assert.ok(handover.history.relationships.some((link) =>
+    link.fromRecordId === 'turn-12-ai-alternative'
+    && link.toRecordId === 'turn-11-ai-sync-proposal'
+    && link.relationship === 'contradicts'
+    && link.fromIncluded === true
+    && link.toIncluded === true));
+  assert.equal(handover.history.events.length, 14);
+  assert.equal(handover.history.eventCountKnown, 14);
+  assert.equal(handover.history.hasOlderEvents, false);
+  assert.match(handover.notice, /not independently verified/);
+}));
+
+test('bounded handover discloses omitted history and marks relationship endpoints outside the included records', () => withStore(({ store }) => {
+  const { project } = seedSubstantiveConversation(store);
+  const handover = store.buildHandover(project.id, { recordLimit: 3, eventLimit: 2 });
+
+  assert.equal(handover.recordCountIncluded, 3);
+  assert.equal(handover.recordCountKnown, 13);
+  assert.equal(handover.hasOlderRecords, true);
+  assert.equal(handover.history.eventCountIncluded, 2);
+  assert.equal(handover.history.eventCountKnown, 14);
+  assert.equal(handover.history.hasOlderEvents, true);
+  assert.ok(handover.history.relationships.some((link) =>
+    link.fromRecordId === 'turn-11-ai-sync-proposal'
+    && link.toRecordId === 'turn-10-user-open-question'
+    && link.fromIncluded === true
+    && link.toIncluded === false));
+  assert.ok(!handover.currentState.recordIdsByCategory.requirement.includes('turn-06-user-provider-requirement'));
 }));
