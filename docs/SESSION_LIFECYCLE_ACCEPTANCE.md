@@ -331,4 +331,4 @@ The first implementation should use a deterministic simulated adapter to exercis
 
 ---
 
-**Acceptance contract:** The twelve scenarios and cross-scenario integrity requirements above must pass before the session lifecycle is considered implemented.
+**Acceptance contract:** All thirteen scenarios and cross-scenario integrity requirements above must pass before the session lifecycle is considered implemented.
