@@ -153,6 +153,42 @@ export function openStore(databasePath) {
         `);
       });
     }
+
+    // Version 2 hardens relationship integrity without rebuilding existing tables.
+    if (version < 2) {
+      withTransaction(db, () => {
+        db.exec(`
+          CREATE TRIGGER record_links_same_project_insert
+          BEFORE INSERT ON record_links
+          BEGIN
+            SELECT CASE
+              WHEN NOT EXISTS (
+                SELECT 1 FROM project_records
+                WHERE id = NEW.from_record_id AND project_id = NEW.project_id
+              ) OR NOT EXISTS (
+                SELECT 1 FROM project_records
+                WHERE id = NEW.to_record_id AND project_id = NEW.project_id
+              )
+              THEN RAISE(ABORT, 'record links must connect records within the same project')
+            END;
+          END;
+
+          CREATE TRIGGER record_links_no_update
+          BEFORE UPDATE ON record_links
+          BEGIN
+            SELECT RAISE(ABORT, 'record links are append-only');
+          END;
+
+          CREATE TRIGGER record_links_no_delete
+          BEFORE DELETE ON record_links
+          BEGIN
+            SELECT RAISE(ABORT, 'record links are append-only');
+          END;
+
+          PRAGMA user_version = 2;
+        `);
+      });
+    }
   } catch (error) {
     db.close();
     throw error;
