@@ -332,3 +332,5 @@ The first implementation should use a deterministic simulated adapter to exercis
 ---
 
 **Acceptance contract:** All thirteen scenarios and cross-scenario integrity requirements above must pass before the session lifecycle is considered implemented.
+
+**Implementation note:** The lifecycle core now requires a confirmation authority injected by its trusted composition root. Confirmation evidence is stored in a separate append-only table and bound to one activation request, Session and Project. The repository currently contains only a test-only simulated authority; this does not constitute production authentication or a trusted user interface.
