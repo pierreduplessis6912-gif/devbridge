@@ -54,6 +54,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       session_id TEXT NOT NULL REFERENCES sessions(id),
       project_id TEXT NOT NULL REFERENCES projects(id),
       requested_at TEXT NOT NULL,
+      -- Legacy claim fields retained for additive schema compatibility; never trusted.
       confirmed_project_id TEXT,
       confirmed_by TEXT,
       confirmation_method TEXT,
