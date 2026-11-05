@@ -115,6 +115,21 @@ test.todo('SLA-10: concurrency and staleness do not become semantic conflict jud
 test.todo('SLA-11: cross-Project reference does not activate or disclose another Project');
 test.todo('SLA-12: ending a Session leaves Project identity and history intact');
 
+test('lifecycle refuses to open without a trusted confirmation authority', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-no-authority-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  try {
+    assert.throws(
+      () => openSessionLifecycle(databasePath, store),
+      /trusted confirmationAuthority/,
+    );
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('SLA-01: initial activation requires project confirmation and acknowledged delivery', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
@@ -352,7 +367,7 @@ test('overlapping activation requests are serialized across lifecycle handles', 
         projectId: 'project-overlap',
         requestId: 'request-overlap-2',
       }),
-      /activation request awaiting confirmation/,
+      /unresolved activation request/,
     );
 
     assert.equal(deliveryCalls, 1);
