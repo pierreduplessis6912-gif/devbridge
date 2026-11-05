@@ -256,16 +256,18 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       ensureOpen();
       return db.prepare(`
         SELECT COALESCE(d.id, i.id) AS id, i.id AS deliveryId,
-          r.id AS activationRequestId, i.handover_snapshot_id AS handoverSnapshotId,
+          r.id AS activationRequestId,
+          COALESCE(i.handover_snapshot_id, d.handover_snapshot_id) AS handoverSnapshotId,
           COALESCE(d.outcome, 'unknown') AS outcome,
           d.acknowledgement_level AS acknowledgementLevel,
           d.provider_reference AS providerReference,
           COALESCE(d.attempted_at, i.created_at) AS attemptedAt,
           CASE WHEN d.id IS NULL THEN 1 ELSE 0 END AS unresolved
-        FROM context_delivery_intents i
-        JOIN activation_requests r ON r.id = i.activation_request_id
+        FROM activation_requests r
+        LEFT JOIN context_delivery_intents i ON i.activation_request_id = r.id
         LEFT JOIN context_delivery_attempts d ON d.activation_request_id = r.id
-        WHERE r.session_id = ? ORDER BY i.rowid
+        WHERE r.session_id = ? AND (i.id IS NOT NULL OR d.id IS NOT NULL)
+        ORDER BY r.requested_at, r.id
       `).all(requiredText(sessionId, 'sessionId'));
     },
 
