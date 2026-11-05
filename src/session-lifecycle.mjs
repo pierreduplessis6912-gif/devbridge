@@ -415,6 +415,16 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         || !providerAdapter.capabilities || providerAdapter.capabilities.contextDelivery !== true) {
         throw new TypeError('providerAdapter must support context delivery');
       }
+      if (db.prepare(
+        'SELECT 1 FROM context_delivery_intents WHERE activation_request_id = ? LIMIT 1',
+      ).get(request)) {
+        throw new Error('Delivery intent already exists; automatic retry is prohibited');
+      }
+      if (db.prepare(
+        'SELECT 1 FROM context_delivery_attempts WHERE activation_request_id = ? LIMIT 1',
+      ).get(request)) {
+        throw new Error('Activation request already has a recorded delivery outcome');
+      }
 
       const handover = continuityStore.buildHandover(project);
       const handoverId = randomUUID();
