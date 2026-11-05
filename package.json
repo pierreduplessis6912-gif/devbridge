@@ -1,0 +1,13 @@
+{
+  "name": "devbridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-independent project continuity core",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
