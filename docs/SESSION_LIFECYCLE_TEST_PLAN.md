@@ -152,6 +152,10 @@ Assert that:
 - Rejected confirmation causes no handover delivery and no Project Activation.
 - The test-only simulated confirmation adapter is explicitly isolated from production authentication code.
 
+### SLT-22 — Confirmation is authenticated, bound and single-use
+
+Exercise the injected confirmation-authority boundary with the test-only simulated authority. Verify that forged tokens, mismatched request/session/project scope, and repeated confirmation are rejected; confirmation evidence is stored separately and append-only; activation cannot proceed without a verified confirmation; and the authenticated actor/method/reference are preserved. This test authority is not production authentication.
+
 ### SLT-21 — Unknown delivery is never automatically replayed
 
 Create and persist a delivery intent with a stable delivery identifier. Simulate provider acceptance followed by process termination before DevBridge records the acknowledgement. Reopen the lifecycle store in a fresh process.
