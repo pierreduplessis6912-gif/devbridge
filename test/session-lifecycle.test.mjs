@@ -183,7 +183,7 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
       const confirmation = inspect.prepare(
         'SELECT confirmed_project_id AS projectId, confirmed_by AS confirmedBy, confirmation_method AS method FROM activation_requests WHERE id = ?',
       ).get('request-confirmed');
-      assert.deepEqual(confirmation, {
+      assert.deepEqual({ ...confirmation }, {
         projectId: 'project-a',
         confirmedBy: 'user',
         method: 'explicit_project_id',
