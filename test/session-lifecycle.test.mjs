@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../src/store.mjs';
 import { openSessionLifecycle } from '../src/session-lifecycle.mjs';
 import { createSimulatedProvider } from '../test-support/simulated-provider.mjs';
+import { createSimulatedConfirmationAuthority } from '../test-support/simulated-confirmation-authority.mjs';
 
 test('simulated provider declares payload acceptance, not model comprehension', () => {
   const provider = createSimulatedProvider();
@@ -120,7 +121,8 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
   const store = openStore(databasePath);
-  const lifecycle = openSessionLifecycle(databasePath, store);
+  const authority = createSimulatedConfirmationAuthority();
+  const lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
 
   try {
     store.createProject({ id: 'project-a', name: 'Project A' });
@@ -134,24 +136,36 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
     lifecycle.createSession({ id: 'session-1', providerName: 'simulated-provider' });
     const provider = createSimulatedProvider({ outcomes: ['acknowledged'] });
 
-    const unconfirmed = await lifecycle.activateProject({
+    lifecycle.requestProjectActivation({
       sessionId: 'session-1',
       projectId: 'project-a',
-      providerAdapter: provider,
       requestId: 'request-unconfirmed',
     });
 
-    assert.equal(unconfirmed.status, 'blocked');
-    assert.equal(unconfirmed.reason, 'project_not_confirmed');
+    await assert.rejects(
+      lifecycle.activateProject({ requestId: 'request-unconfirmed', providerAdapter: provider }),
+      /requires trusted user confirmation/,
+    );
     assert.equal(lifecycle.getActiveActivation('session-1'), null);
     assert.equal(lifecycle.listDeliveryAttempts('session-1').length, 0);
 
-    const activated = await lifecycle.activateProject({
+    lifecycle.requestProjectActivation({
       sessionId: 'session-1',
       projectId: 'project-a',
-      confirmedProjectId: 'project-a',
-      providerAdapter: provider,
       requestId: 'request-confirmed',
+    });
+    const confirmationToken = authority.issue({
+      requestId: 'request-confirmed',
+      sessionId: 'session-1',
+      projectId: 'project-a',
+    });
+    await lifecycle.confirmProjectActivation({
+      requestId: 'request-confirmed',
+      confirmationToken,
+    });
+    const activated = await lifecycle.activateProject({
+      requestId: 'request-confirmed',
+      providerAdapter: provider,
     });
 
     assert.equal(activated.status, 'active');
@@ -169,7 +183,6 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
     assert.deepEqual(events.map((event) => event.eventType), [
       'session_created',
       'activation_requested',
-      'project_confirmation_failed',
       'activation_requested',
       'project_confirmed',
       'handover_prepared',
@@ -181,23 +194,21 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
     const inspect = new DatabaseSync(databasePath);
     try {
       const confirmation = inspect.prepare(
-        'SELECT confirmed_project_id AS projectId, confirmed_by AS confirmedBy, confirmation_method AS method FROM activation_requests WHERE id = ?',
+        'SELECT project_id AS projectId, actor_id AS actorId, confirmation_method AS method FROM activation_confirmations WHERE activation_request_id = ?',
       ).get('request-confirmed');
       assert.deepEqual({ ...confirmation }, {
         projectId: 'project-a',
-        confirmedBy: 'user',
-        method: 'explicit_project_id',
+        actorId: 'test-user',
+        method: 'simulated_test_confirmation',
       });
     } finally {
       inspect.close();
     }
 
     await assert.rejects(
-      lifecycle.activateProject({
+      lifecycle.requestProjectActivation({
         sessionId: 'session-1',
         projectId: 'project-a',
-        confirmedProjectId: 'project-a',
-        providerAdapter: provider,
         requestId: 'request-duplicate',
       }),
       /already has an active Project Activation/,
@@ -214,8 +225,9 @@ test('overlapping activation requests are serialized across lifecycle handles', 
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-overlap-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
   const store = openStore(databasePath);
-  const firstLifecycle = openSessionLifecycle(databasePath, store);
-  const secondLifecycle = openSessionLifecycle(databasePath, store);
+  const authority = createSimulatedConfirmationAuthority();
+  const firstLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const secondLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
   let releaseDelivery;
   let deliveryStarted;
   const started = new Promise((resolve) => { deliveryStarted = resolve; });
@@ -244,21 +256,30 @@ test('overlapping activation requests are serialized across lifecycle handles', 
     store.createProject({ id: 'project-overlap', name: 'Overlap project' });
     firstLifecycle.createSession({ id: 'session-overlap' });
 
-    const firstActivation = firstLifecycle.activateProject({
+    firstLifecycle.requestProjectActivation({
       sessionId: 'session-overlap',
       projectId: 'project-overlap',
-      confirmedProjectId: 'project-overlap',
-      providerAdapter: provider,
       requestId: 'request-overlap-1',
+    });
+    const overlapToken = authority.issue({
+      requestId: 'request-overlap-1',
+      sessionId: 'session-overlap',
+      projectId: 'project-overlap',
+    });
+    await firstLifecycle.confirmProjectActivation({
+      requestId: 'request-overlap-1',
+      confirmationToken: overlapToken,
+    });
+    const firstActivation = firstLifecycle.activateProject({
+      requestId: 'request-overlap-1',
+      providerAdapter: provider,
     });
     await started;
 
     await assert.rejects(
-      secondLifecycle.activateProject({
+      secondLifecycle.requestProjectActivation({
         sessionId: 'session-overlap',
         projectId: 'project-overlap',
-        confirmedProjectId: 'project-overlap',
-        providerAdapter: provider,
         requestId: 'request-overlap-2',
       }),
       /confirmed activation request in progress/,
@@ -290,19 +311,30 @@ test('failed or unknown initial delivery never creates an active Project Activat
     lifecycle.createSession({ id: 'session-f' });
     const provider = createSimulatedProvider({ outcomes: ['failed', 'unknown'] });
 
-    const failed = await lifecycle.activateProject({
-      sessionId: 'session-f',
-      projectId: 'project-f',
-      confirmedProjectId: 'project-f',
-      providerAdapter: provider,
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-f', projectId: 'project-f', requestId: 'request-failed',
+    });
+    await lifecycle.confirmProjectActivation({
       requestId: 'request-failed',
+      confirmationToken: authority.issue({
+        requestId: 'request-failed', sessionId: 'session-f', projectId: 'project-f',
+      }),
+    });
+    const failed = await lifecycle.activateProject({
+      requestId: 'request-failed', providerAdapter: provider,
+    });
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-f', projectId: 'project-f', requestId: 'request-unknown',
+    });
+    await lifecycle.confirmProjectActivation({
+      requestId: 'request-unknown',
+      confirmationToken: authority.issue({
+        requestId: 'request-unknown', sessionId: 'session-f', projectId: 'project-f',
+      }),
     });
     const unknown = await lifecycle.activateProject({
-      sessionId: 'session-f',
-      projectId: 'project-f',
-      confirmedProjectId: 'project-f',
-      providerAdapter: provider,
-      requestId: 'request-unknown',
+      requestId: 'request-unknown', providerAdapter: provider,
     });
 
     assert.equal(failed.status, 'blocked');
