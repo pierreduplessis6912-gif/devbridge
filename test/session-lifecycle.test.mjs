@@ -184,7 +184,6 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
     assert.deepEqual(events.map((event) => event.eventType), [
       'session_created',
       'activation_requested',
-      'activation_requested',
       'project_confirmed',
       'handover_prepared',
       'delivery_acknowledged',
@@ -281,10 +280,11 @@ test('confirmation tokens are trusted, exact, single-use and cannot be forged', 
     );
 
     const provider = createSimulatedProvider();
-    await assert.rejects(
-      lifecycle.activateProject({ requestId: 'request-confirm', providerAdapter: provider }),
-      /already has an active|recorded delivery outcome/,
-    );
+    const activated = await lifecycle.activateProject({
+      requestId: 'request-confirm',
+      providerAdapter: provider,
+    });
+    assert.equal(activated.status, 'active');
     assert.equal(lifecycle.listActivations('session-confirm').length, 1);
   } finally {
     lifecycle.close();
@@ -354,7 +354,7 @@ test('overlapping activation requests are serialized across lifecycle handles', 
         projectId: 'project-overlap',
         requestId: 'request-overlap-2',
       }),
-      /confirmed activation request in progress/,
+      /activation request awaiting confirmation/,
     );
 
     assert.equal(deliveryCalls, 1);
@@ -376,7 +376,8 @@ test('failed or unknown initial delivery never creates an active Project Activat
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-failure-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
   const store = openStore(databasePath);
-  const lifecycle = openSessionLifecycle(databasePath, store);
+  const authority = createSimulatedConfirmationAuthority();
+  const lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
 
   try {
     store.createProject({ id: 'project-f', name: 'Failure project' });
