@@ -164,6 +164,8 @@ The adapter must declare what its acknowledgement means. Acceptance of a payload
 
 DevBridge must never claim a stronger guarantee than the provider integration can establish. If the provider offers no reliable way to establish the required receipt, that integration cannot silently bypass the context-before-continuation invariant; the limitation must be disclosed and the transition must remain incomplete unless a supported recovery path establishes the requirement.
 
+**Durable delivery rule:** Before calling a provider, DevBridge persists an immutable delivery intent with a stable delivery identifier linked to the exact activation request and handover. The same identifier is passed to the adapter as the delivery ID/idempotency key. A persisted intent with no recorded outcome is reconstructed as Unknown after restart. An Unknown outcome is unresolved, blocks another activation request in that Session, and is never automatically resent. This implementation does not yet provide provider reconciliation or safe retry; absent provider evidence, recovery requires a separately authorised path such as a fresh provider Session and newly prepared handover.
+
 ## 7. Context-before-continuation invariant
 
 **A project context transition is not complete until the intended project is confirmed and its required context has been successfully delivered and acknowledged.**
@@ -260,7 +262,7 @@ Examples:
 | Provider confirms only payload acceptance | Record that exact level; do not claim model comprehension. Apply the adapter's declared activation rule. |
 | Fresh handover is required because context is stale | Pause project continuation until refreshed delivery is acknowledged. |
 
-Recovery must be explicit and traceable. Retrying delivery creates or updates delivery-attempt history; it must not rewrite the original project contributions or outgoing checkpoint.
+Recovery must be explicit and traceable. An unresolved intent is never resent automatically. A future retry may be considered only when provider reconciliation proves the earlier delivery was not accepted, or the adapter contract guarantees idempotency for the same persistent delivery identifier. Any permitted retry must append attempt history and must not rewrite the original intent, unknown outcome, project contributions or outgoing checkpoint.
 
 ## 11. Conceptual lifecycle states
 
@@ -348,5 +350,5 @@ The session lifecycle design is satisfied when tests can demonstrate:
 
 ---
 
-**Design status:** Agreed architectural direction, including the no-automatic-retry rule for uncertain delivery. The lifecycle core now requires an injected confirmation authority, persists exact request/session/project confirmation evidence separately, and rejects caller-supplied confirmation claims. The only implemented authority is a test-only simulation; production authentication and trusted-interface wiring remain open. Durable delivery intents and crash recovery remain the next implementation stage.  
+**Design status:** The lifecycle core requires an injected confirmation authority, persists exact request/session/project confirmation evidence separately, and rejects caller-supplied confirmation claims. The only implemented authority is a test-only simulation; production authentication and trusted-interface wiring remain open. Delivery intents are now persisted before provider calls with stable IDs. Missing outcomes are reconstructed as Unknown after process restart, and automatic replay is blocked. Provider reconciliation and any explicitly safe idempotent retry remain unimplemented.  
 **Core guarantee:** A project conversation may persist across switches, but project context is never assumed. It is confirmed, freshly delivered and acknowledged before DevBridge authorises continuation.
