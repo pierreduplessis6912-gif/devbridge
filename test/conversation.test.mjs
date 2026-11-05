@@ -138,11 +138,12 @@ function seedSubstantiveConversation(store) {
     },
   ];
 
+  const conversationStartedAt = Date.now();
   for (const turn of turns) {
     const sequence = Number(turn.id.slice(5, 7));
     store.appendRecord({
       projectId: project.id,
-      recordedAt: `2026-11-05T12:00:${String(sequence).padStart(2, '0')}.000Z`,
+      recordedAt: new Date(conversationStartedAt + sequence * 1000).toISOString(),
       ...turn,
     });
   }
