@@ -368,6 +368,9 @@ test('SLT-21: provider acceptance followed by process death is never automatical
     assert.equal(attempts[0].deliveryId, providerReceipt.deliveryId);
     assert.equal(attempts[0].outcome, 'unknown');
     assert.equal(attempts[0].unresolved, 1);
+    assert.equal(attempts[0].id, null);
+    assert.equal(attempts[0].attemptedAt, null);
+    assert.equal(typeof attempts[0].intentCreatedAt, 'string');
 
     await assert.rejects(
       reopened.activateProject({
