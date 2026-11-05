@@ -418,7 +418,8 @@ export function openStore(databasePath) {
         .map((record) => record.id);
       const supersededRecordIds = [...new Set(
         allLinks
-          .filter((link) => link.relationship === 'supersedes')
+          .filter((link) => link.relationship === 'supersedes'
+            && includedRecordIds.has(link.toRecordId))
           .map((link) => link.toRecordId),
       )];
 
