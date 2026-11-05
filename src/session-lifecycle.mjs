@@ -283,10 +283,6 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           SELECT 1 FROM activation_requests r
           WHERE r.session_id = ?
             AND NOT EXISTS (
-              SELECT 1 FROM activation_confirmations c
-              WHERE c.activation_request_id = r.id
-            )
-            AND NOT EXISTS (
               SELECT 1 FROM context_delivery_attempts d
               WHERE d.activation_request_id = r.id
             )
