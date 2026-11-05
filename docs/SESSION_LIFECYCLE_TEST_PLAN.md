@@ -145,10 +145,10 @@ Create and persist a delivery intent with a stable delivery identifier. Simulate
 Assert that:
 - The unresolved outcome is reconstructed as Unknown/pending reconciliation, not silently treated as Failed or Acknowledged.
 - Startup and ordinary lifecycle recovery do not call the provider adapter to resend the delivery.
-- The original delivery identifier and attempt history remain unchanged.
+- The original delivery intent and identifier remain unchanged; a provider attempt is not fabricated when no response was recorded.
 - A retry of the same logical delivery is allowed only when the adapter contract proves idempotency for that same identifier, or provider reconciliation establishes that the earlier delivery was not accepted.
 - If neither condition can be established, the original attempt remains Unknown and recovery requires a separately authorised safe path, such as a new provider session and a newly prepared handover.
-- A new-session recovery does not rewrite or erase the original unknown attempt.
+- A separately confirmed activation in a fresh DevBridge Session may prepare a new handover and delivery ID without rewriting or erasing the original unknown intent.
 
 ### SLT-22 — Confirmation is authenticated, bound and single-use
 
