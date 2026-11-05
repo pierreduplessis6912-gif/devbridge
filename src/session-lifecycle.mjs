@@ -256,6 +256,37 @@ export function openSessionLifecycle(databasePath, continuityStore) {
       }
 
       withTransaction(db, () => {
+        // Recheck under the write lock: another lifecycle handle may have
+        // started delivery after our earlier read-only active-session check.
+        const active = db.prepare(`
+          SELECT 1 FROM project_activations a
+          WHERE a.session_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM session_lifecycle_events e
+              WHERE e.activation_id = a.id AND e.event_type = 'activation_ended'
+            )
+          LIMIT 1
+        `).get(session);
+        if (active) {
+          throw new Error('Session already has an active Project Activation; switching is not yet supported');
+        }
+
+        // A confirmed request without a recorded delivery outcome is still
+        // in flight (or needs recovery after interruption). Fail closed.
+        const pending = db.prepare(`
+          SELECT 1 FROM activation_requests r
+          WHERE r.session_id = ?
+            AND r.confirmed_project_id = r.project_id
+            AND NOT EXISTS (
+              SELECT 1 FROM context_delivery_attempts d
+              WHERE d.activation_request_id = r.id
+            )
+          LIMIT 1
+        `).get(session);
+        if (pending) {
+          throw new Error('Session already has a confirmed activation request in progress');
+        }
+
         db.prepare(`
           INSERT INTO activation_requests
           (id, session_id, project_id, requested_at, confirmed_project_id,
