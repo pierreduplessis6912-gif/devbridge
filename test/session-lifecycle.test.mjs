@@ -26,14 +26,17 @@ test('simulated provider returns deterministic acknowledged, failed and unknown 
   const handover = { id: 'handover-a-1', projectId: 'project-a' };
 
   const acknowledged = await provider.deliver({
+    deliveryId: 'delivery-1',
     handover,
     activationRequestId: 'activation-request-1',
   });
   const failed = await provider.deliver({
+    deliveryId: 'delivery-2',
     handover,
     activationRequestId: 'activation-request-2',
   });
   const unknown = await provider.deliver({
+    deliveryId: 'delivery-3',
     handover,
     activationRequestId: 'activation-request-3',
   });
@@ -55,33 +58,39 @@ test('simulated provider returns deterministic acknowledged, failed and unknown 
     unknown.attemptId,
   ]).size, 3);
   assert.equal(acknowledged.handoverId, handover.id);
+  assert.equal(acknowledged.deliveryId, 'delivery-1');
   assert.equal(acknowledged.activationRequestId, 'activation-request-1');
   assert.equal(acknowledged.provesModelComprehension, false);
 });
 
-test('simulated provider preserves distinct retry attempts and rejects an exhausted outcome script', async () => {
+test('simulated provider echoes the stable delivery ID and rejects an exhausted outcome script', async () => {
   const provider = createSimulatedProvider({
     outcomes: ['failed', 'acknowledged'],
   });
   const handover = { id: 'handover-b-1', projectId: 'project-b' };
 
   const first = await provider.deliver({
+    deliveryId: 'stable-delivery-b',
     handover,
     activationRequestId: 'activation-request-b',
   });
-  const retry = await provider.deliver({
+  const second = await provider.deliver({
+    deliveryId: 'stable-delivery-b',
     handover,
     activationRequestId: 'activation-request-b',
   });
 
   assert.equal(first.outcome, 'failed');
-  assert.equal(retry.outcome, 'acknowledged');
-  assert.notEqual(first.attemptId, retry.attemptId);
+  assert.equal(second.outcome, 'acknowledged');
+  assert.notEqual(first.attemptId, second.attemptId);
   assert.equal(first.sequence, 1);
-  assert.equal(retry.sequence, 2);
+  assert.equal(second.sequence, 2);
+  assert.equal(first.deliveryId, 'stable-delivery-b');
+  assert.equal(second.deliveryId, 'stable-delivery-b');
 
   await assert.rejects(
     provider.deliver({
+      deliveryId: 'stable-delivery-b',
       handover,
       activationRequestId: 'activation-request-b',
     }),
@@ -93,11 +102,11 @@ test('simulated provider rejects malformed delivery requests', async () => {
   const provider = createSimulatedProvider();
 
   await assert.rejects(
-    provider.deliver({ activationRequestId: 'activation-request-1' }),
+    provider.deliver({ deliveryId: 'delivery-malformed', activationRequestId: 'activation-request-1' }),
     /handover with a non-empty id is required/,
   );
   await assert.rejects(
-    provider.deliver({ handover: { id: 'handover-a' } }),
+    provider.deliver({ deliveryId: 'delivery-malformed', handover: { id: 'handover-a' } }),
     /activationRequestId is required/,
   );
 });
@@ -199,6 +208,7 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
       'activation_requested',
       'project_confirmed',
       'handover_prepared',
+      'delivery_intent_persisted',
       'delivery_acknowledged',
       'project_activated',
     ]);
@@ -323,11 +333,12 @@ test('overlapping activation requests are serialized across lifecycle handles', 
       acknowledgementLevel: 'payload_accepted',
       provesModelComprehension: false,
     },
-    async deliver({ handover, activationRequestId }) {
+    async deliver({ deliveryId, handover, activationRequestId }) {
       deliveryCalls += 1;
       deliveryStarted();
       await new Promise((resolve) => { releaseDelivery = resolve; });
       return {
+        deliveryId,
         activationRequestId,
         handoverId: handover.id,
         attemptId: 'provider-attempt-1',
