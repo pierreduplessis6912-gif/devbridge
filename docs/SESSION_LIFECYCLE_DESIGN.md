@@ -141,6 +141,14 @@ Project identity confirmation and context-delivery confirmation are separate req
 
 The intended project must be unambiguous and explicitly confirmed before its context is delivered for activation.
 
+**Agreed trust boundary:** Only an authenticated user action through a trusted DevBridge interface may authorise project activation. An AI provider, model response, background process, ordinary API caller, or unauthenticated client cannot assert or manufacture the user's confirmation.
+
+The confirmation must be bound to the exact pending activation request, DevBridge Session and target Project. It must be single-use and must not be transferable to another request, session or project. DevBridge must verify the authenticated actor's authority at the confirmation boundary and record the actor, confirmation method, request identity and time as provenance.
+
+A caller-supplied boolean or fields such as `confirmedBy`, `confirmedProjectId` or `confirmationMethod` are not, by themselves, evidence of authenticated user intent. Internal lifecycle functions must consume a verified confirmation result issued by the trusted boundary, rather than trusting arbitrary caller-provided confirmation claims.
+
+A simulated confirmation adapter may be used in isolated tests, but it must be clearly identified as test-only and must not be treated as proof of production authentication.
+
 ### Context delivery status
 
 The lifecycle must distinguish at least:
@@ -340,5 +348,5 @@ The session lifecycle design is satisfied when tests can demonstrate:
 
 ---
 
-**Design status:** Agreed architectural direction, including the no-automatic-retry rule for uncertain delivery; confirmation provenance, provider mechanics, physical schema and implementation remain open.  
+**Design status:** Agreed architectural direction, including the no-automatic-retry rule for uncertain delivery; provider mechanics, physical schema and implementation remain open. Trusted confirmation is an agreed requirement; its concrete authentication/session-binding mechanism must be designed and tested before real integration.  
 **Core guarantee:** A project conversation may persist across switches, but project context is never assumed. It is confirmed, freshly delivered and acknowledged before DevBridge authorises continuation.
