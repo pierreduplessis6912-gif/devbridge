@@ -138,6 +138,18 @@ Inject failure between lifecycle steps, especially:
 
 Reopen the store in a fresh process or fresh store instance and verify that recovery produces an explicit, consistent state. It must not invent success or lose recorded history.
 
+### SLT-21 — Unknown delivery is never automatically replayed
+
+Create and persist a delivery intent with a stable delivery identifier. Simulate provider acceptance followed by process termination before DevBridge records the acknowledgement. Reopen the lifecycle store in a fresh process.
+
+Assert that:
+- The unresolved outcome is reconstructed as Unknown/pending reconciliation, not silently treated as Failed or Acknowledged.
+- Startup and ordinary lifecycle recovery do not call the provider adapter to resend the delivery.
+- The original delivery identifier and attempt history remain unchanged.
+- A retry of the same logical delivery is allowed only when the adapter contract proves idempotency for that same identifier, or provider reconciliation establishes that the earlier delivery was not accepted.
+- If neither condition can be established, the original attempt remains Unknown and recovery requires a separately authorised safe path, such as a new provider session and a newly prepared handover.
+- A new-session recovery does not rewrite or erase the original unknown attempt.
+
 ### SLT-17 — Staleness boundary correctness
 
 Create multiple activations at different project-history boundaries. Add a contribution and verify only eligible older active activations are marked potentially stale.
