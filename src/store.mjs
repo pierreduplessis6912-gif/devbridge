@@ -66,7 +66,7 @@ export function openStore(databasePath) {
     db.exec('PRAGMA synchronous = FULL');
 
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 1) {
+    if (version > 2) {
       throw new Error(`Database schema version ${version} is newer than this application supports`);
     }
 
