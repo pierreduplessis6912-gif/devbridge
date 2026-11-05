@@ -172,6 +172,12 @@ Possible remedies include retrying delivery, reconnecting or repairing the provi
 
 A new chat is a recovery option, not an automatic assumption that delivery will succeed.
 
+**Agreed recovery decision — no automatic retry of an uncertain delivery:** if DevBridge cannot establish whether a provider accepted a delivery, it must preserve the outcome as **Unknown** and must not automatically resend that delivery. An unknown outcome is not evidence of failure.
+
+Recovery must first seek evidence from the provider where a documented status/reconciliation capability exists. A retry of the same logical delivery is permissible only where the provider contract establishes safe idempotency using the same persistent delivery identifier, or reconciliation establishes that the earlier delivery was not accepted. Otherwise, DevBridge must preserve the unresolved attempt and use a separately authorised recovery path, such as a fresh provider session with a newly prepared handover. The original unknown attempt remains in history and is never rewritten as failed or successful without evidence.
+
+A process restart must not interpret an unresolved delivery intent as permission to send again. It must reconstruct the pending/unknown state and require reconciliation or an explicit safe recovery decision.
+
 The outgoing project's checkpoint remains preserved throughout the failure.
 
 This is a DevBridge control over its own mediated workflow. It cannot guarantee that an external provider or user will never send or receive messages independently of DevBridge. Such activity must not be represented as a confirmed DevBridge project continuation.
@@ -241,8 +247,8 @@ Examples:
 |---|---|
 | Target project identity is ambiguous or not confirmed | Do not prepare activation as complete; ask the user to identify/confirm the intended project. |
 | Handover cannot be prepared | Keep transition incomplete; report the preparation failure and preserve the outgoing checkpoint. |
-| Provider delivery attempt fails | Keep transition incomplete; report the failure and offer a supported retry/reconnection/new-chat remedy. |
-| Provider acknowledgement is absent or unknown | Do not claim receipt or activate the project; explain what the adapter can and cannot confirm. |
+| Provider delivery attempt definitively fails before acceptance | Keep transition incomplete; preserve the failed attempt and offer a supported recovery remedy. |
+| Provider acknowledgement is absent or unknown | Do not claim receipt or activate the project; preserve the outcome as Unknown. Never automatically resend it. Reconcile with provider evidence where supported; otherwise use a separately authorised safe recovery path, potentially a fresh provider session. |
 | Provider confirms only payload acceptance | Record that exact level; do not claim model comprehension. Apply the adapter's declared activation rule. |
 | Fresh handover is required because context is stale | Pause project continuation until refreshed delivery is acknowledged. |
 
@@ -309,7 +315,7 @@ The following require provider and storage evidence before implementation:
 3. Can the adapter distinguish payload acceptance from context availability to the model?
 4. How should a handover be versioned against a consistent project record snapshot while concurrent contributions arrive?
 5. What transaction boundaries ensure that activation, delivery state and contribution attribution cannot become inconsistent?
-6. How should retries and interrupted delivery attempts be recovered without duplicate or ambiguous activation?
+6. How should provider status reconciliation and explicitly safe, idempotent recovery be implemented for interrupted delivery attempts?
 7. How should stale activations be discovered efficiently across devices and sessions?
 8. What ordering guarantees are available when timestamps are equal, delayed or supplied by different devices?
 
@@ -334,5 +340,5 @@ The session lifecycle design is satisfied when tests can demonstrate:
 
 ---
 
-**Design status:** Agreed architectural direction; provider mechanics, physical schema and implementation remain open.  
+**Design status:** Agreed architectural direction, including the no-automatic-retry rule for uncertain delivery; confirmation provenance, provider mechanics, physical schema and implementation remain open.  
 **Core guarantee:** A project conversation may persist across switches, but project context is never assumed. It is confirmed, freshly delivered and acknowledged before DevBridge authorises continuation.
