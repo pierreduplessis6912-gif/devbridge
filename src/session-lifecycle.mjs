@@ -288,7 +288,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
             )
           LIMIT 1
         `).get(session);
-        if (pending) throw new Error('Session already has an activation request awaiting confirmation');
+        if (pending) throw new Error('Session already has an unresolved activation request');
 
         db.prepare(`
           INSERT INTO activation_requests
