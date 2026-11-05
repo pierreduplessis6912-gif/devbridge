@@ -143,11 +143,76 @@ Minimum conceptual information:
 - Optional outgoing checkpoint reference.
 - Optional stale-context marker and the project version/event boundary against which the activation's handover was prepared.
 
-An activation is not considered active merely because a project was selected or a handover was prepared. Activation requires explicit confirmation of the intended project and successful context delivery acknowledged at the strongest level the provider adapter actually supports.
+An activation is not considered active merely because a project was selected or a handover was prepared. Activation requires a separately identifiable Activation Confirmation for the intended project and successful context delivery acknowledged at the strongest level the provider adapter actually supports.
 
-If project confirmation, delivery or required acknowledgement fails or remains unknown, the transition remains incomplete and the incoming project is not activated for DevBridge-authorised continuation.
+If project confirmation, delivery or required acknowledgement fails or remains unknown, the transition remains incomplete and the incoming project is not activated for DevBridge-authorised continuation. The failed transition and any retry must remain visible in lifecycle history.
 
-Ending an activation does not end the project. Switching away from a project does not close it.
+Ending an activation does not end the project. Switching away from a project does not close it. The outgoing activation may receive an Outgoing Checkpoint, which records where that session's work and context stood at the time of switching; it does not declare the project finished or freeze the project against other sessions.
+
+### Activation Confirmation
+
+Represents explicit evidence that the intended Project was confirmed for a particular activation request.
+
+Minimum conceptual information:
+- Stable confirmation identifier.
+- Target Project identifier.
+- Related Session and Project Activation/request identifier.
+- Confirming actor (normally the user) and confirmation source/method.
+- Confirmation timestamp.
+- The project identity/name or other display information presented for confirmation, sufficient to establish what was confirmed.
+- Optional reference to the interaction or source that captured the confirmation.
+
+Confirmation is specific to one activation request. A previous confirmation for the same project does not automatically confirm a later activation or return. Confirmation and provider context delivery are separate requirements; confirmation alone does not activate the project.
+
+### Activation Lifecycle Event
+
+Represents one immutable event in the lifecycle of a Session or Project Activation.
+
+Minimum conceptual information:
+- Stable lifecycle-event identifier.
+- Related Session and, where applicable, Project Activation identifiers.
+- Event type.
+- Timestamp and ordering information.
+- Origin/actor and source reference where available.
+- Relevant related entity identifiers, such as confirmation, checkpoint, handover snapshot, delivery attempt or staleness marker.
+- Optional outcome or reason supplied by the event source.
+
+The event history records meaningful transitions such as activation requested, project confirmed, outgoing checkpoint created, handover prepared, delivery attempted, delivery acknowledged, delivery failed, outcome unknown, activation confirmed, activation blocked, stale context detected, refresh completed and activation ended.
+
+Lifecycle events are append-only. A retry adds further events; it does not rewrite or erase the failed attempt. Current lifecycle state may be derived from this history, but the underlying events remain authoritative.
+
+### Outgoing Checkpoint
+
+Represents the outgoing Session's recorded position when it switches away from a Project Activation.
+
+Minimum conceptual information:
+- Stable checkpoint identifier.
+- Outgoing Session, Project Activation and Project identifiers.
+- Checkpoint timestamp and ordering boundary.
+- Reference to the outgoing activation's handover snapshot/context version.
+- Boundary identifying the last contribution or lifecycle event included in the checkpoint, where available.
+- Optional summary or note explicitly supplied by the user or AI, with provenance.
+
+A checkpoint preserves the session-specific position and references needed to resume or understand that activation. It is not a declaration that the project is complete, a project-wide lock, or a replacement for project records. Other sessions may continue contributing to the project after the checkpoint.
+
+A checkpoint remains preserved even if the incoming project transition subsequently fails.
+
+### Staleness Marker
+
+Represents an observed version relationship indicating that an activation's supplied project context predates newer recorded project history.
+
+Minimum conceptual information:
+- Stable marker identifier.
+- Affected Session and Project Activation identifiers.
+- Project identifier.
+- Handover snapshot or history boundary supplied to the activation.
+- Newer project event, contribution or history boundary that makes the activation potentially stale.
+- Detection timestamp and detection source.
+- Optional reference to the refresh activation/snapshot that later addressed the marker.
+
+A staleness marker records version age only. It does not assert that the older session saw or failed to understand the newer contribution, and it does not classify a semantic conflict.
+
+Marker detection and later refresh/resolution are preserved as separate lifecycle events. The original marker is not deleted or rewritten when a refresh occurs. Whether a marker is considered addressed is determined by its relationship to a later acknowledged refresh whose snapshot includes the newer boundary.
 
 ### Handover Snapshot
 
@@ -259,8 +324,12 @@ Account
        │    └── Historical Events
        ├── Project Activations
        │    ├── Session
+       │    ├── Activation Confirmations
+       │    ├── Activation Lifecycle Events
+       │    ├── Outgoing Checkpoints
        │    ├── Handover Snapshots
-       │    └── Context Delivery Attempts
+       │    ├── Context Delivery Attempts
+       │    └── Staleness Markers
        ├── Connected Sources
        ├── Project Location References
        └── Cross-Project References
@@ -279,9 +348,13 @@ Provider Integration
 - A Session has an ordered sequence of Project Activations and at most one active primary activation at a time.
 - A Project Activation belongs to exactly one Session and one Project.
 - A Project Record or Historical Event may be attributed to a Session and Project Activation when it arose within that activation; attribution remains optional for contributions outside tracked sessions.
+- A Project Activation has a separately recorded Activation Confirmation for the intended Project; confirmation is specific to that activation request.
+- Activation Lifecycle Events preserve the ordered, append-only history of requests, confirmations, checkpoints, handover preparation, delivery outcomes, activation, blocking, refresh and ending.
+- An outgoing Project Activation may have an Outgoing Checkpoint identifying its session-specific position and history boundary; the checkpoint does not close or lock the Project.
 - A Project Activation uses a fresh Handover Snapshot for its project context.
 - A Handover Snapshot identifies a consistent project-history boundary and the records included in that view.
 - A Context Delivery Attempt belongs to an activation and refers to the snapshot it attempted to deliver.
+- A Staleness Marker links an older activation/handover boundary to newer project history; a later acknowledged refresh may address it without deleting the original marker.
 - A Session and its delivery attempts identify the provider integration and adapter capabilities actually involved.
 - A Project may have multiple Connected Sources and Project Location References.
 - A Project Record may relate to earlier or other records within the same project without overwriting them.
@@ -298,13 +371,16 @@ The model must be capable of preserving these rules from [SESSION_LIFECYCLE_DESI
 4. The intended project must be explicitly confirmed before its context is delivered for activation.
 5. A project activation is not complete until the required context delivery is acknowledged at the strongest provider-supported level.
 6. Failed or unknown delivery leaves the transition incomplete; the incoming project is not active for DevBridge-authorised continuation.
-7. Outgoing project history and any checkpoint remain preserved if an incoming transition fails.
-8. Contributions are attributable to their project and, when applicable, the session and activation under which they arose.
+7. Outgoing project history and any Outgoing Checkpoint remain preserved if an incoming transition fails.
+8. Project confirmation is separately recorded against the specific activation request, including what project identity was confirmed, by whom and when.
+9. Activation Lifecycle Events preserve failed attempts and subsequent retries as append-only history; a later success does not erase an earlier failure.
+10. Contributions are attributable to their project and, when applicable, the session and activation under which they arose.
 9. Concurrent sessions may contribute to the same project. Both contributions remain preserved with provenance.
-10. A contribution made after another activation's handover boundary may mark that activation as potentially stale. This is a version/context fact, not a semantic judgement.
-11. A stale activation is not silently refreshed in the middle of ongoing work. Before its next DevBridge-authorised continuation, the changed state is disclosed and a fresh handover is delivered and acknowledged.
-12. DevBridge records concurrency and staleness; it does not decide which contribution is correct or which one should prevail.
-13. Ending a Session or Project Activation does not end or erase the Project.
+11. A contribution made after another activation's handover boundary may create a Staleness Marker linking the older activation to the newer project event/version. This is a version/context fact, not a semantic judgement.
+12. A stale activation is not silently refreshed in the middle of ongoing work. Before its next DevBridge-authorised continuation, the changed state is disclosed and a fresh handover is delivered and acknowledged.
+13. A later acknowledged refresh may address a Staleness Marker, but must not delete or rewrite the marker or the history that caused it.
+14. DevBridge records concurrency and staleness; it does not decide which contribution is correct or which one should prevail.
+15. Ending a Session or Project Activation does not end or erase the Project.
 
 These invariants govern DevBridge-mediated project context and continuation. They do not claim that DevBridge can prevent a user or external provider from exchanging messages outside a supported DevBridge workflow.
 
@@ -358,7 +434,10 @@ Staleness is a statement about recorded versions, not a claim that an AI's reaso
 The initial storage implementation must support:
 - Stable identifiers.
 - Durable local persistence.
-- Append-only historical records and lifecycle events.
+- Append-only historical records and lifecycle events, including confirmation, checkpoint, failed delivery and retry history.
+- Separate, attributable evidence of project confirmation for each activation request.
+- Identifiable outgoing checkpoints that preserve session position without closing the project.
+- Staleness markers tied to explicit project-history boundaries, with refresh history preserved.
 - Source attribution, including optional session/activation attribution.
 - Integrity of ordinary within-project record relationships.
 - Explicitly separate cross-project references.
@@ -397,6 +476,8 @@ These concepts would expand DevBridge beyond its agreed continuity responsibilit
 - What exact acknowledgement levels can that provider reliably report?
 - How should Project Activation, Handover Snapshot and Context Delivery Attempt be represented in the physical schema?
 - What snapshot boundary and transaction strategy guarantee a consistent handover while other sessions contribute?
-- How should stale-context markers be generated and cleared without semantic judgement?
+- How should staleness markers be detected, linked to newer project-history boundaries and addressed by acknowledged refreshes without deleting their history?
+- What exact information must an outgoing checkpoint preserve to support a later return without implying project completion?
+- Which lifecycle events are essential for reconstructing activation state and failed/retried transitions?
 - How should offline updates merge without deleting or rewriting history?
 - How should cross-project references be authorised and exposed without loading unrelated project context?
