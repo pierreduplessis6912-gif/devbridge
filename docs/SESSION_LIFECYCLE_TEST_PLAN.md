@@ -147,7 +147,7 @@ Assert that:
 - Startup and ordinary lifecycle recovery do not call the provider adapter to resend the delivery.
 - The original delivery intent and identifier remain unchanged; a provider attempt is not fabricated when no response was recorded.
 - A retry of the same logical delivery is allowed only when the adapter contract proves idempotency for that same identifier, or provider reconciliation establishes that the earlier delivery was not accepted.
-- If neither condition can be established, the original attempt remains Unknown and recovery requires a separately authorised safe path, such as a new provider session and a newly prepared handover.
+- If neither condition can be established, the original intent remains unresolved/Unknown and recovery requires a separately authorised safe path, such as a new provider session and a newly prepared handover.
 - A separately confirmed activation in a fresh DevBridge Session may prepare a new handover and delivery ID without rewriting or erasing the original unknown intent.
 
 ### SLT-22 — Confirmation is authenticated, bound and single-use
@@ -194,15 +194,17 @@ Assert that no partial active activation, orphan handover association, dangling 
 
 ### Gate 1 — Contract tests
 
-Before changing the physical schema, make the simulated lifecycle interface and expected transitions explicit. Tests should fail against the current implementation because Sessions and Activations are not implemented; this is an expected baseline, not a regression.
+**Established in the current branch:** lifecycle design, acceptance criteria, test plan and deterministic provider/confirmation test doubles.
 
-### Gate 2 — Minimal lifecycle implementation
+### Gate 2 — Initial lifecycle implementation
 
-Implement the smallest model that passes SLT-01 through SLT-12 and the required integrity checks without adding a real provider integration.
+**Implemented, pending execution of the test suite:** initial activation, injected confirmation authority, append-only confirmation evidence, durable delivery intents, stable delivery identifiers, acknowledgement validation and fail-closed unknown handling.
+
+This is not the complete Session Lifecycle. Project switching, contribution attribution, stale-context refresh, session ending and several integrity scenarios remain unimplemented.
 
 ### Gate 3 — Recovery and hardening
 
-Pass SLT-13 through SLT-20, including interrupted writes, idempotency, stale-boundary correctness, ordering and append-only history.
+The branch now includes tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation and separately authorised fresh-Session recovery. The remaining SLT-13 through SLT-20 checks still require implementation and/or execution.
 
 ### Gate 4 — Review
 
