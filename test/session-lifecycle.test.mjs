@@ -332,7 +332,8 @@ test('SLT-21: interrupted delivery remains unknown and is never automatically re
       acknowledgementLevel: 'payload_accepted',
       provesModelComprehension: false,
     },
-    async deliver({ deliveryId }) {
+    async deliver({ deliveryId, idempotencyKey }) {
+      assert.equal(idempotencyKey, deliveryId);
       deliveryCalls += 1;
       observedDeliveryId = deliveryId;
       deliveryStarted();
@@ -419,7 +420,8 @@ test('overlapping activation requests are serialized across lifecycle handles', 
       acknowledgementLevel: 'payload_accepted',
       provesModelComprehension: false,
     },
-    async deliver({ deliveryId, handover, activationRequestId }) {
+    async deliver({ deliveryId, idempotencyKey, handover, activationRequestId }) {
+      assert.equal(idempotencyKey, deliveryId);
       deliveryCalls += 1;
       deliveryStarted();
       await new Promise((resolve) => { releaseDelivery = resolve; });
@@ -529,6 +531,13 @@ test('SLA-04: failed or unknown delivery blocks activation', async () => {
     assert.deepEqual(
       lifecycle.listDeliveryAttempts('session-f').map((attempt) => attempt.outcome),
       ['failed', 'unknown'],
+    );
+    assert.equal(lifecycle.listDeliveryAttempts('session-f')[1].unresolved, 1);
+    assert.throws(
+      () => lifecycle.requestProjectActivation({
+        sessionId: 'session-f', projectId: 'project-f', requestId: 'request-after-unknown',
+      }),
+      /unresolved activation request/,
     );
     assert.equal(
       lifecycle.listEvents('session-f').filter((event) => event.eventType === 'project_activated').length,
