@@ -316,6 +316,92 @@ test('confirmation tokens are trusted, exact, single-use and cannot be forged', 
   }
 });
 
+test('SLT-21: interrupted delivery remains unknown and is never automatically replayed', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-delivery-recovery-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  let lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  let deliveryCalls = 0;
+  let deliveryStarted;
+  const started = new Promise((resolve) => { deliveryStarted = resolve; });
+  let observedDeliveryId = null;
+  const provider = {
+    capabilities: {
+      contextDelivery: true,
+      acknowledgementLevel: 'payload_accepted',
+      provesModelComprehension: false,
+    },
+    async deliver({ deliveryId }) {
+      deliveryCalls += 1;
+      observedDeliveryId = deliveryId;
+      deliveryStarted();
+      // Simulate the process stopping while the provider outcome is unresolved.
+      return new Promise(() => {});
+    },
+  };
+
+  let reopened;
+  try {
+    store.createProject({ id: 'project-recovery', name: 'Recovery project' });
+    lifecycle.createSession({ id: 'session-recovery' });
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-recovery',
+      projectId: 'project-recovery',
+      requestId: 'request-recovery',
+    });
+    await lifecycle.confirmProjectActivation({
+      requestId: 'request-recovery',
+      confirmationToken: authority.issue({
+        requestId: 'request-recovery',
+        sessionId: 'session-recovery',
+        projectId: 'project-recovery',
+      }),
+    });
+
+    // Intentionally not awaited: this models process loss after provider call starts.
+    lifecycle.activateProject({
+      requestId: 'request-recovery',
+      providerAdapter: provider,
+    });
+    await started;
+    assert.equal(typeof observedDeliveryId, 'string');
+    lifecycle.close();
+
+    reopened = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+    const attempts = reopened.listDeliveryAttempts('session-recovery');
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0].deliveryId, observedDeliveryId);
+    assert.equal(attempts[0].outcome, 'unknown');
+    assert.equal(attempts[0].unresolved, 1);
+
+    await assert.rejects(
+      reopened.activateProject({
+        requestId: 'request-recovery',
+        providerAdapter: provider,
+      }),
+      /Delivery intent already exists; automatic retry is prohibited/,
+    );
+    assert.equal(deliveryCalls, 1);
+
+    assert.throws(
+      () => reopened.requestProjectActivation({
+        sessionId: 'session-recovery',
+        projectId: 'project-recovery',
+        requestId: 'request-recovery-again',
+      }),
+      /unresolved activation request/,
+    );
+    assert.equal(deliveryCalls, 1);
+    assert.equal(reopened.getActiveActivation('session-recovery'), null);
+  } finally {
+    lifecycle.close();
+    reopened?.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('overlapping activation requests are serialized across lifecycle handles', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-session-overlap-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
