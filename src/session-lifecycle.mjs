@@ -36,7 +36,7 @@ export function openSessionLifecycle(databasePath, continuityStore) {
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA busy_timeout = 5000');
 
-  db.exec(`
+  withTransaction(db, () => db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       provider_name TEXT,
@@ -49,7 +49,11 @@ export function openSessionLifecycle(databasePath, continuityStore) {
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES sessions(id),
       project_id TEXT NOT NULL REFERENCES projects(id),
-      requested_at TEXT NOT NULL
+      requested_at TEXT NOT NULL,
+      confirmed_project_id TEXT,
+      confirmed_by TEXT,
+      confirmation_method TEXT,
+      confirmed_at TEXT
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS handover_snapshots (
@@ -129,7 +133,7 @@ export function openSessionLifecycle(databasePath, continuityStore) {
       BEGIN SELECT RAISE(ABORT, 'session lifecycle events are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS lifecycle_events_no_delete BEFORE DELETE ON session_lifecycle_events
       BEGIN SELECT RAISE(ABORT, 'session lifecycle events are append-only'); END;
-  `);
+  `));
 
   let closed = false;
   const ensureOpen = () => { if (closed) throw new Error('Session lifecycle store is closed'); };
@@ -232,7 +236,8 @@ export function openSessionLifecycle(databasePath, continuityStore) {
     },
 
     async activateProject({
-      sessionId, projectId, confirmedProjectId = null, providerAdapter,
+      sessionId, projectId, confirmedProjectId = null, confirmedBy = 'user',
+      confirmationMethod = 'explicit_project_id', providerAdapter,
       requestId = randomUUID(), requestedAt = new Date().toISOString(),
     }) {
       ensureOpen();
@@ -242,6 +247,9 @@ export function openSessionLifecycle(databasePath, continuityStore) {
       const timestamp = requiredText(requestedAt, 'requestedAt');
       if (!this.getSession(session)) throw new Error('Session not found: ' + session);
       if (!continuityStore.getProject(project)) throw new Error('Project not found: ' + project);
+      if (this.getActiveActivation(session)) {
+        throw new Error('Session already has an active Project Activation; switching is not yet supported');
+      }
       if (!providerAdapter || typeof providerAdapter.deliver !== 'function'
         || !providerAdapter.capabilities || providerAdapter.capabilities.contextDelivery !== true) {
         throw new TypeError('providerAdapter must support context delivery');
@@ -249,9 +257,17 @@ export function openSessionLifecycle(databasePath, continuityStore) {
 
       withTransaction(db, () => {
         db.prepare(`
-          INSERT INTO activation_requests (id, session_id, project_id, requested_at)
-          VALUES (?, ?, ?, ?)
-        `).run(request, session, project, timestamp);
+          INSERT INTO activation_requests
+          (id, session_id, project_id, requested_at, confirmed_project_id,
+           confirmed_by, confirmation_method, confirmed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          request, session, project, timestamp,
+          confirmedProjectId === project ? project : null,
+          confirmedProjectId === project ? requiredText(confirmedBy, 'confirmedBy') : null,
+          confirmedProjectId === project ? requiredText(confirmationMethod, 'confirmationMethod') : null,
+          confirmedProjectId === project ? timestamp : null,
+        );
         appendEvent({
           sessionId: session, eventType: 'activation_requested', projectId: project,
           activationRequestId: request, summary: 'Activation requested for project ' + project,
@@ -315,7 +331,8 @@ export function openSessionLifecycle(databasePath, continuityStore) {
         && delivery.acknowledgementLevel === providerAdapter.capabilities.acknowledgementLevel;
       const outcome = acknowledged ? 'acknowledged'
         : validOutcome ? delivery.outcome : 'unknown';
-      const attemptId = matches ? delivery.attemptId : randomUUID();
+      const providerAttemptReference = matches ? delivery.attemptId : null;
+      const attemptId = randomUUID();
       const attemptedAt = new Date().toISOString();
       let activation = null;
 
@@ -328,7 +345,7 @@ export function openSessionLifecycle(databasePath, continuityStore) {
         `).run(
           attemptId, request, handoverId, outcome,
           acknowledged ? delivery.acknowledgementLevel : null,
-          delivery?.providerReference ?? null, attemptedAt,
+          delivery?.providerReference ?? providerAttemptReference, attemptedAt,
         );
         appendEvent({
           sessionId: session,
