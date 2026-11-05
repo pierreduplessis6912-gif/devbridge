@@ -348,5 +348,5 @@ The session lifecycle design is satisfied when tests can demonstrate:
 
 ---
 
-**Design status:** Agreed architectural direction, including the no-automatic-retry rule for uncertain delivery; provider mechanics, physical schema and implementation remain open. Trusted confirmation is an agreed requirement; its concrete authentication/session-binding mechanism must be designed and tested before real integration.  
+**Design status:** Agreed architectural direction, including the no-automatic-retry rule for uncertain delivery. The lifecycle core now requires an injected confirmation authority, persists exact request/session/project confirmation evidence separately, and rejects caller-supplied confirmation claims. The only implemented authority is a test-only simulation; production authentication and trusted-interface wiring remain open. Durable delivery intents and crash recovery remain the next implementation stage.  
 **Core guarantee:** A project conversation may persist across switches, but project context is never assumed. It is confirmed, freshly delivered and acknowledged before DevBridge authorises continuation.
