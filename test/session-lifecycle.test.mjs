@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../src/store.mjs';
 import { openSessionLifecycle } from '../src/session-lifecycle.mjs';
 import { createSimulatedProvider } from '../test-support/simulated-provider.mjs';
@@ -176,6 +177,32 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
       'project_activated',
     ]);
     assert.equal(events.at(-1).activationId, activated.activation.id);
+
+    const inspect = new DatabaseSync(databasePath);
+    try {
+      const confirmation = inspect.prepare(
+        'SELECT confirmed_project_id AS projectId, confirmed_by AS confirmedBy, confirmation_method AS method FROM activation_requests WHERE id = ?',
+      ).get('request-confirmed');
+      assert.deepEqual(confirmation, {
+        projectId: 'project-a',
+        confirmedBy: 'user',
+        method: 'explicit_project_id',
+      });
+    } finally {
+      inspect.close();
+    }
+
+    await assert.rejects(
+      lifecycle.activateProject({
+        sessionId: 'session-1',
+        projectId: 'project-a',
+        confirmedProjectId: 'project-a',
+        providerAdapter: provider,
+        requestId: 'request-duplicate',
+      }),
+      /already has an active Project Activation/,
+    );
+    assert.equal(lifecycle.listActivations('session-1').length, 1);
   } finally {
     lifecycle.close();
     store.close();
