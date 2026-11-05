@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../src/store.mjs';
 
 function withStore(run) {
@@ -117,6 +118,46 @@ test('does not permit silent mutation of historical records', () => withStore(({
   `;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script, databasePath], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
+}));
+
+test('database enforces same-project links and append-only relationship history', () => withStore(({ store, databasePath }) => {
+  store.createProject({ id: 'p1', name: 'First project' });
+  store.createProject({ id: 'p2', name: 'Second project' });
+  store.appendRecord({ id: 'r1', projectId: 'p1', category: 'decision', content: 'First project record.', originType: 'user' });
+  store.appendRecord({ id: 'r2', projectId: 'p2', category: 'decision', content: 'Second project record.', originType: 'user' });
+  store.appendRecord({
+    id: 'r3', projectId: 'p1', category: 'change', content: 'A linked record.', originType: 'user',
+    relatedRecords: [{ recordId: 'r1', relationship: 'supersedes' }],
+  });
+  store.close();
+
+  // Simulate an existing v1 database so the upgrade path is exercised.
+  const downgrade = new DatabaseSync(databasePath);
+  downgrade.exec(`
+    DROP TRIGGER record_links_same_project_insert;
+    DROP TRIGGER record_links_no_update;
+    DROP TRIGGER record_links_no_delete;
+    PRAGMA user_version = 1;
+  `);
+  downgrade.close();
+
+  const migratedStore = openStore(databasePath);
+  migratedStore.close();
+
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.exec('PRAGMA foreign_keys = ON');
+    const linkId = db.prepare('SELECT id FROM record_links WHERE from_record_id = ?').get('r3').id;
+    assert.throws(() => db.prepare(`
+      INSERT INTO record_links (id, project_id, from_record_id, to_record_id, relationship, created_at)
+      VALUES ('cross-project-link', 'p1', 'r1', 'r2', 'relates_to', '2026-11-05T12:00:00.000Z')
+    `).run(), /same project/);
+    assert.throws(() => db.prepare('UPDATE record_links SET relationship = ? WHERE id = ?').run('contradicts', linkId), /append-only/);
+    assert.throws(() => db.prepare('DELETE FROM record_links WHERE id = ?').run(linkId), /append-only/);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
+  } finally {
+    db.close();
+  }
 }));
 
 test('builds a bounded handover and discloses older records', () => withStore(({ store }) => {
