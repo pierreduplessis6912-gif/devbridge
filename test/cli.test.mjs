@@ -21,6 +21,10 @@ test('CLI creates a project, appends a record and exports its handover', () => {
     const project = JSON.parse(created.stdout);
     assert.equal(project.name, 'CLI project');
 
+    const projects = runCli(directory, 'project', 'list');
+    assert.equal(projects.status, 0, projects.stderr);
+    assert.deepEqual(JSON.parse(projects.stdout).map((item) => item.id), [project.id]);
+
     const added = runCli(
       directory, 'record', 'add',
       '--project', project.id,
