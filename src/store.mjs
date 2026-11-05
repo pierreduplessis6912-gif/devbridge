@@ -368,31 +368,96 @@ export function openStore(databasePath) {
       `).all(project, count).reverse();
     },
 
-    buildHandover(projectId, { recordLimit = 50 } = {}) {
+    buildHandover(projectId, { recordLimit = 50, eventLimit = recordLimit } = {}) {
       ensureOpen();
       const project = this.getProject(projectId);
       if (!project) throw new Error(`Project not found: ${projectId}`);
       const limit = positiveInteger(recordLimit, 'recordLimit');
-      const total = db.prepare(
+      const eventCountLimit = positiveInteger(eventLimit, 'eventLimit');
+      const recordCountKnown = db.prepare(
         'SELECT COUNT(*) AS count FROM project_records WHERE project_id = ?',
       ).get(project.id).count;
+      const eventCountKnown = db.prepare(
+        'SELECT COUNT(*) AS count FROM project_events WHERE project_id = ?',
+      ).get(project.id).count;
       const records = this.listRecords(project.id, { limit });
+      const events = this.listEvents(project.id, { limit: eventCountLimit });
+      const includedRecordIds = new Set(records.map((record) => record.id));
+      const allLinks = db.prepare(`
+        SELECT id, project_id AS projectId,
+          from_record_id AS fromRecordId, to_record_id AS toRecordId,
+          relationship, created_at AS createdAt
+        FROM record_links
+        WHERE project_id = ?
+        ORDER BY created_at, id
+      `).all(project.id);
+      const relationships = allLinks
+        .filter((link) => includedRecordIds.has(link.fromRecordId)
+          || includedRecordIds.has(link.toRecordId))
+        .map((link) => ({
+          ...link,
+          fromIncluded: includedRecordIds.has(link.fromRecordId),
+          toIncluded: includedRecordIds.has(link.toRecordId),
+        }));
       const lastEvent = db.prepare(`
         SELECT occurred_at AS occurredAt FROM project_events
         WHERE project_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 1
       `).get(project.id) ?? null;
 
+      const recordIdsByCategory = Object.fromEntries(
+        RECORD_CATEGORIES.map((category) => [
+          category,
+          records.filter((record) => record.category === category).map((record) => record.id),
+        ]),
+      );
+      const unresolvedRecordIds = records
+        .filter((record) => record.statusText === 'unresolved')
+        .map((record) => record.id);
+      const reportedStatusRecordIds = records
+        .filter((record) => record.category === 'status' && record.statusText !== 'unresolved')
+        .map((record) => record.id);
+      const supersededRecordIds = [...new Set(
+        allLinks
+          .filter((link) => link.relationship === 'supersedes')
+          .map((link) => link.toRecordId),
+      )];
+
       return {
-        format: 'devbridge-handover-v1',
+        format: 'devbridge-handover-v2',
         generatedAt: new Date().toISOString(),
         project,
+        kernel: {
+          projectId: project.id,
+          name: project.name,
+          purpose: project.purpose,
+          principles: [],
+          principlePolicy: 'Principles are included only after the user explicitly marks them as enduring project principles.',
+        },
+        currentState: {
+          basis: 'index_of_included_records_only',
+          recordIdsByCategory,
+          unresolvedRecordIds,
+          reportedStatusRecordIds,
+          supersededRecordIds,
+        },
+        history: {
+          records,
+          relationships,
+          events,
+          recordCountIncluded: records.length,
+          recordCountKnown,
+          hasOlderRecords: recordCountKnown > records.length,
+          eventCountIncluded: events.length,
+          eventCountKnown,
+          hasOlderEvents: eventCountKnown > events.length,
+        },
         records,
         recordCountIncluded: records.length,
-        recordCountKnown: total,
-        hasOlderRecords: total > records.length,
+        recordCountKnown,
+        hasOlderRecords: recordCountKnown > records.length,
         lastRecordedActivityAt: lastEvent?.occurredAt ?? null,
         completeness: 'recorded_context_only',
-        notice: 'This handover contains information recorded by DevBridge. It may not include private conversations, unconnected sources or activity that was never submitted or observed.',
+        notice: 'This handover contains information recorded by DevBridge only. It may omit private conversations, disconnected sources, or activity never submitted or observed. Current-state indexes cover included records only; status reports are not independently verified.',
       };
     },
 
