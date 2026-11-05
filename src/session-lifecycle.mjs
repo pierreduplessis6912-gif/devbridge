@@ -26,10 +26,14 @@ function withTransaction(db, work) {
  * lifecycle API in its own module. Provider delivery occurs outside DB
  * transactions; activation is committed only after a matching acknowledgement.
  */
-export function openSessionLifecycle(databasePath, continuityStore) {
+export function openSessionLifecycle(databasePath, continuityStore, { confirmationAuthority } = {}) {
   if (!continuityStore || typeof continuityStore.buildHandover !== 'function'
     || typeof continuityStore.getProject !== 'function') {
     throw new TypeError('continuityStore with project and handover methods is required');
+  }
+
+  if (!confirmationAuthority || typeof confirmationAuthority.consume !== 'function') {
+    throw new TypeError('A trusted confirmationAuthority with consume() is required');
   }
 
   const db = new DatabaseSync(requiredText(databasePath, 'databasePath'));
@@ -54,6 +58,17 @@ export function openSessionLifecycle(databasePath, continuityStore) {
       confirmed_by TEXT,
       confirmation_method TEXT,
       confirmed_at TEXT
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS activation_confirmations (
+      id TEXT PRIMARY KEY,
+      activation_request_id TEXT NOT NULL UNIQUE REFERENCES activation_requests(id),
+      session_id TEXT NOT NULL REFERENCES sessions(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      actor_id TEXT NOT NULL,
+      confirmation_method TEXT NOT NULL,
+      authority_reference TEXT NOT NULL,
+      confirmed_at TEXT NOT NULL
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS handover_snapshots (
@@ -117,6 +132,10 @@ export function openSessionLifecycle(databasePath, continuityStore) {
       BEGIN SELECT RAISE(ABORT, 'activation requests are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS activation_requests_no_delete BEFORE DELETE ON activation_requests
       BEGIN SELECT RAISE(ABORT, 'activation requests are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS activation_confirmations_no_update BEFORE UPDATE ON activation_confirmations
+      BEGIN SELECT RAISE(ABORT, 'activation confirmations are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS activation_confirmations_no_delete BEFORE DELETE ON activation_confirmations
+      BEGIN SELECT RAISE(ABORT, 'activation confirmations are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS handover_snapshots_no_update BEFORE UPDATE ON handover_snapshots
       BEGIN SELECT RAISE(ABORT, 'handover snapshots are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS handover_snapshots_no_delete BEFORE DELETE ON handover_snapshots
@@ -235,10 +254,9 @@ export function openSessionLifecycle(databasePath, continuityStore) {
       `).all(requiredText(sessionId, 'sessionId'));
     },
 
-    async activateProject({
-      sessionId, projectId, confirmedProjectId = null, confirmedBy = 'user',
-      confirmationMethod = 'explicit_project_id', providerAdapter,
-      requestId = randomUUID(), requestedAt = new Date().toISOString(),
+    requestProjectActivation({
+      sessionId, projectId, requestId = randomUUID(),
+      requestedAt = new Date().toISOString(),
     }) {
       ensureOpen();
       const session = requiredText(sessionId, 'sessionId');
@@ -247,17 +265,8 @@ export function openSessionLifecycle(databasePath, continuityStore) {
       const timestamp = requiredText(requestedAt, 'requestedAt');
       if (!this.getSession(session)) throw new Error('Session not found: ' + session);
       if (!continuityStore.getProject(project)) throw new Error('Project not found: ' + project);
-      if (this.getActiveActivation(session)) {
-        throw new Error('Session already has an active Project Activation; switching is not yet supported');
-      }
-      if (!providerAdapter || typeof providerAdapter.deliver !== 'function'
-        || !providerAdapter.capabilities || providerAdapter.capabilities.contextDelivery !== true) {
-        throw new TypeError('providerAdapter must support context delivery');
-      }
 
       withTransaction(db, () => {
-        // Recheck under the write lock: another lifecycle handle may have
-        // started delivery after our earlier read-only active-session check.
         const active = db.prepare(`
           SELECT 1 FROM project_activations a
           WHERE a.session_id = ?
@@ -270,54 +279,142 @@ export function openSessionLifecycle(databasePath, continuityStore) {
         if (active) {
           throw new Error('Session already has an active Project Activation; switching is not yet supported');
         }
-
-        // A confirmed request without a recorded delivery outcome is still
-        // in flight (or needs recovery after interruption). Fail closed.
         const pending = db.prepare(`
           SELECT 1 FROM activation_requests r
           WHERE r.session_id = ?
-            AND r.confirmed_project_id = r.project_id
+            AND NOT EXISTS (
+              SELECT 1 FROM activation_confirmations c
+              WHERE c.activation_request_id = r.id
+            )
             AND NOT EXISTS (
               SELECT 1 FROM context_delivery_attempts d
               WHERE d.activation_request_id = r.id
             )
           LIMIT 1
         `).get(session);
-        if (pending) {
-          throw new Error('Session already has a confirmed activation request in progress');
-        }
+        if (pending) throw new Error('Session already has an activation request awaiting confirmation');
 
         db.prepare(`
           INSERT INTO activation_requests
-          (id, session_id, project_id, requested_at, confirmed_project_id,
-           confirmed_by, confirmation_method, confirmed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          request, session, project, timestamp,
-          confirmedProjectId === project ? project : null,
-          confirmedProjectId === project ? requiredText(confirmedBy, 'confirmedBy') : null,
-          confirmedProjectId === project ? requiredText(confirmationMethod, 'confirmationMethod') : null,
-          confirmedProjectId === project ? timestamp : null,
-        );
+            (id, session_id, project_id, requested_at)
+          VALUES (?, ?, ?, ?)
+        `).run(request, session, project, timestamp);
         appendEvent({
           sessionId: session, eventType: 'activation_requested', projectId: project,
           activationRequestId: request, summary: 'Activation requested for project ' + project,
           occurredAt: timestamp,
         });
+      });
+      return { id: request, sessionId: session, projectId: project, requestedAt: timestamp };
+    },
+
+    async confirmProjectActivation({ requestId, confirmationToken }) {
+      ensureOpen();
+      const request = requiredText(requestId, 'requestId');
+      const token = requiredText(confirmationToken, 'confirmationToken');
+      const pending = db.prepare(`
+        SELECT r.id, r.session_id AS sessionId, r.project_id AS projectId
+        FROM activation_requests r
+        WHERE r.id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM activation_confirmations c WHERE c.activation_request_id = r.id
+          )
+      `).get(request);
+      if (!pending) throw new Error('Pending activation request not found or already confirmed');
+
+      // The injected authority is established by the trusted application composition
+      // root. Callers cannot supply actor/project claims directly to this lifecycle API.
+      const verified = await confirmationAuthority.consume(token, {
+        requestId: pending.id,
+        sessionId: pending.sessionId,
+        projectId: pending.projectId,
+      });
+      if (!verified || verified.requestId !== pending.id
+        || verified.sessionId !== pending.sessionId
+        || verified.projectId !== pending.projectId
+        || typeof verified.actorId !== 'string' || !verified.actorId.trim()
+        || typeof verified.method !== 'string' || !verified.method.trim()
+        || typeof verified.authorityReference !== 'string' || !verified.authorityReference.trim()
+        || typeof verified.confirmedAt !== 'string' || !verified.confirmedAt.trim()) {
+        throw new Error('Trusted confirmation authority returned invalid or mismatched confirmation evidence');
+      }
+
+      withTransaction(db, () => {
+        const stillPending = db.prepare(`
+          SELECT 1 FROM activation_requests r
+          WHERE r.id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM activation_confirmations c WHERE c.activation_request_id = r.id
+            )
+        `).get(request);
+        if (!stillPending) throw new Error('Activation request was already confirmed');
+        db.prepare(`
+          INSERT INTO activation_confirmations
+            (id, activation_request_id, session_id, project_id, actor_id,
+             confirmation_method, authority_reference, confirmed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          randomUUID(), pending.id, pending.sessionId, pending.projectId,
+          verified.actorId.trim(), verified.method.trim(),
+          verified.authorityReference.trim(), verified.confirmedAt.trim(),
+        );
         appendEvent({
-          sessionId: session,
-          eventType: confirmedProjectId === project ? 'project_confirmed' : 'project_confirmation_failed',
-          projectId: project, activationRequestId: request,
-          summary: confirmedProjectId === project
-            ? 'User confirmed project ' + project
-            : 'Project identity not explicitly confirmed; activation blocked',
-          occurredAt: timestamp,
+          sessionId: pending.sessionId, eventType: 'project_confirmed',
+          projectId: pending.projectId, activationRequestId: pending.id,
+          summary: 'Authenticated user confirmed project ' + pending.projectId,
+          occurredAt: verified.confirmedAt.trim(),
         });
       });
+      return {
+        requestId: pending.id, sessionId: pending.sessionId,
+        projectId: pending.projectId, actorId: verified.actorId.trim(),
+        method: verified.method.trim(), confirmedAt: verified.confirmedAt.trim(),
+      };
+    },
 
-      if (confirmedProjectId !== project) {
-        return { status: 'blocked', reason: 'project_not_confirmed', activation: null };
+    async activateProject({ requestId, providerAdapter }) {
+      ensureOpen();
+      const request = requiredText(requestId, 'requestId');
+      const activationRequest = db.prepare(`
+        SELECT r.id, r.session_id AS sessionId, r.project_id AS projectId,
+          c.actor_id AS confirmedBy, c.confirmation_method AS confirmationMethod,
+          c.confirmed_at AS confirmedAt
+        FROM activation_requests r
+        JOIN activation_confirmations c ON c.activation_request_id = r.id
+        WHERE r.id = ?
+      `).get(request);
+      if (!activationRequest) {
+        throw new Error('Activation request requires trusted user confirmation before delivery');
       }
+      const { sessionId: session, projectId: project } = activationRequest;
+      if (!this.getSession(session)) throw new Error('Session not found: ' + session);
+      if (!continuityStore.getProject(project)) throw new Error('Project not found: ' + project);
+      if (this.getActiveActivation(session)) {
+        throw new Error('Session already has an active Project Activation; switching is not yet supported');
+      }
+      if (!providerAdapter || typeof providerAdapter.deliver !== 'function'
+        || !providerAdapter.capabilities || providerAdapter.capabilities.contextDelivery !== true) {
+        throw new TypeError('providerAdapter must support context delivery');
+      }
+
+      withTransaction(db, () => {
+        const active = db.prepare(`
+          SELECT 1 FROM project_activations a
+          WHERE a.session_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM session_lifecycle_events e
+              WHERE e.activation_id = a.id AND e.event_type = 'activation_ended'
+            )
+          LIMIT 1
+        `).get(session);
+        if (active) {
+          throw new Error('Session already has an active Project Activation; switching is not yet supported');
+        }
+        const priorDelivery = db.prepare(
+          'SELECT 1 FROM context_delivery_attempts WHERE activation_request_id = ? LIMIT 1',
+        ).get(request);
+        if (priorDelivery) throw new Error('Activation request already has a recorded delivery outcome');
+      });
 
       const handover = continuityStore.buildHandover(project);
       const handoverId = randomUUID();
