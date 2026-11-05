@@ -35,7 +35,8 @@ export function createSimulatedProvider({
       provesModelComprehension: false,
     }),
 
-    async deliver({ handover, activationRequestId } = {}) {
+    async deliver({ deliveryId, handover, activationRequestId } = {}) {
+      const persistentDeliveryId = requiredId(deliveryId, 'deliveryId');
       const handoverId = requiredId(handover?.id, 'handover with a non-empty id');
       const requestId = requiredId(activationRequestId, 'activationRequestId');
       if (scriptedOutcomes.length === 0) {
@@ -47,6 +48,7 @@ export function createSimulatedProvider({
 
       return Object.freeze({
         attemptId: `sim-delivery-attempt-${sequence}`,
+        deliveryId: persistentDeliveryId,
         activationRequestId: requestId,
         handoverId,
         outcome,
