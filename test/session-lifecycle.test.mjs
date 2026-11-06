@@ -914,7 +914,7 @@ test('SLT-21: provider acceptance followed by process death is never automatical
 
 
 
-test('store v3 migration assigns stable per-Project sequences to existing events', () => {
+test('store v2 migration assigns stable per-Project sequences and adds activation attribution', () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-store-v3-migration-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
   const legacy = new DatabaseSync(databasePath);
@@ -967,7 +967,7 @@ test('store v3 migration assigns stable per-Project sequences to existing events
           { id: 'a-second-inserted', sequence: 2 },
         ],
       );
-      assert.equal(inspect.prepare('PRAGMA user_version').get().user_version, 3);
+      assert.equal(inspect.prepare('PRAGMA user_version').get().user_version, 4);
     } finally {
       inspect.close();
     }
