@@ -102,7 +102,7 @@ test('SLA-12: ending a Session preserves Project identity, records and activatio
       sessionId: 'session-end-active', projectId: project.id,
     }), /Session has ended/);
     assert.throws(() => f.lifecycle.prepareContribution({
-      sessionId: 'session-end-active', category: 'note',
+      sessionId: 'session-end-active', category: 'status',
       content: 'A new post-end contribution.', originType: 'user',
     }), /no active confirmed Project Activation/);
     await assert.rejects(
@@ -209,7 +209,7 @@ test('SLA-12: an already-reserved contribution may finish, but no new submission
     assert.equal(activated.status, 'active');
 
     const prepared = f.lifecycle.prepareContribution({
-      sessionId: 'reserved-session', category: 'note',
+      sessionId: 'reserved-session', category: 'status',
       content: 'Submitted before the Session ended.',
       originType: 'user', id: 'reserved-record',
     });
@@ -221,7 +221,7 @@ test('SLA-12: an already-reserved contribution may finish, but no new submission
     assert.equal(committed.activationId, activated.activation.id);
     assert.equal(f.lifecycle.listContributionIntents('reserved-session')[0].status, 'committed');
     assert.throws(() => f.lifecycle.prepareContribution({
-      sessionId: 'reserved-session', category: 'note',
+      sessionId: 'reserved-session', category: 'status',
       content: 'This was not submitted before ending.', originType: 'user',
     }), /no active confirmed Project Activation/);
   } finally {
