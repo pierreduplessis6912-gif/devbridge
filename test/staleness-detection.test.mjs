@@ -20,7 +20,7 @@ test('SLA-07: a newer Project contribution marks other older active activations 
   const secondLifecycle = openSessionLifecycle(databasePath, store, {
     confirmationAuthority: authority,
   });
-  const provider = createSimulatedProvider();
+  const provider = createSimulatedProvider({ outcomes: ['acknowledged', 'acknowledged'] });
 
   const activate = async (lifecycle, sessionId, requestId, projectId) => {
     lifecycle.requestProjectActivation({ sessionId, projectId, requestId });
