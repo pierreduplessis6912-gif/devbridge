@@ -157,8 +157,12 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         SELECT 1 FROM project_activations a
         JOIN activation_requests r ON r.id = NEW.incoming_activation_request_id
         JOIN activation_confirmations c ON c.activation_request_id = r.id
+        JOIN session_lifecycle_events request_event
+          ON request_event.activation_request_id = r.id
+          AND request_event.event_type = 'activation_requested'
         JOIN project_events p ON p.id = NEW.project_event_id
         WHERE a.id = NEW.outgoing_activation_id
+          AND request_event.activation_id = a.id
           AND a.session_id = NEW.session_id
           AND a.project_id = NEW.project_id
           AND a.handover_snapshot_id = NEW.handover_snapshot_id
@@ -477,15 +481,21 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       ensureOpen();
       const request = requiredText(requestId, 'requestId');
       const incoming = db.prepare(`
-        SELECT r.id, r.session_id AS sessionId, r.project_id AS projectId
+        SELECT r.id, r.session_id AS sessionId, r.project_id AS projectId,
+          e.activation_id AS requestedFromActivationId
         FROM activation_requests r
         JOIN activation_confirmations c ON c.activation_request_id = r.id
+        JOIN session_lifecycle_events e
+          ON e.activation_request_id = r.id AND e.event_type = 'activation_requested'
         WHERE r.id = ?
       `).get(request);
       if (!incoming) throw new Error('Checkpoint requires a confirmed incoming activation request');
 
       const outgoing = this.getActiveActivation(incoming.sessionId);
       if (!outgoing) throw new Error('Session has no active outgoing Project Activation to checkpoint');
+      if (incoming.requestedFromActivationId !== outgoing.id) {
+        throw new Error('Incoming activation request was not created against the active outgoing activation');
+      }
       if (outgoing.projectId === incoming.projectId) {
         throw new Error('Cannot checkpoint an activation when the requested Project is already active');
       }
