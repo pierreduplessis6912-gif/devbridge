@@ -228,3 +228,71 @@ test('SLA-12: an already-reserved contribution may finish, but no new submission
     f.close();
   }
 });
+
+test('SLA-12: ending a Session preserves an unresolved delivery without replay', async () => {
+  const f = fixture('devbridge-session-end-unknown-');
+  let signalStarted;
+  let resolveDelivery;
+  let calls = 0;
+  const started = new Promise((resolve) => { signalStarted = resolve; });
+  const pending = new Promise((resolve) => { resolveDelivery = resolve; });
+  const provider = {
+    capabilities: {
+      contextDelivery: true,
+      acknowledgementLevel: 'payload_accepted',
+      provesModelComprehension: false,
+    },
+    async deliver(input) {
+      calls += 1;
+      signalStarted(input);
+      return pending;
+    },
+  };
+  try {
+    f.store.createProject({ id: 'unknown-project', name: 'Unknown delivery project' });
+    f.lifecycle.createSession({ id: 'unknown-session' });
+    f.lifecycle.requestProjectActivation({
+      sessionId: 'unknown-session', projectId: 'unknown-project', requestId: 'unknown-request',
+    });
+    await f.lifecycle.confirmProjectActivation({
+      requestId: 'unknown-request',
+      confirmationToken: f.authority.issue({
+        requestId: 'unknown-request', sessionId: 'unknown-session', projectId: 'unknown-project',
+      }),
+    });
+    const activationWork = f.lifecycle.activateProject({
+      requestId: 'unknown-request', providerAdapter: provider,
+    });
+    const input = await started;
+    f.lifecycle.endSession({ sessionId: 'unknown-session' });
+
+    const pendingAttempt = f.lifecycle.listDeliveryAttempts('unknown-session')[0];
+    assert.equal(pendingAttempt.deliveryId, input.deliveryId);
+    assert.equal(pendingAttempt.outcome, 'unknown');
+    assert.equal(pendingAttempt.unresolved, 1);
+
+    resolveDelivery({
+      deliveryId: input.deliveryId,
+      activationRequestId: 'unknown-request',
+      handoverId: input.handover.id,
+      attemptId: 'unknown-provider-result',
+      outcome: 'unknown',
+    });
+    const result = await activationWork;
+    assert.equal(result.status, 'blocked');
+    assert.equal(result.reason, 'session_ended');
+    const finalAttempt = f.lifecycle.listDeliveryAttempts('unknown-session')[0];
+    assert.equal(finalAttempt.deliveryId, input.deliveryId);
+    assert.equal(finalAttempt.outcome, 'unknown');
+    assert.equal(finalAttempt.unresolved, 1);
+    assert.equal(calls, 1);
+    assert.equal(f.lifecycle.listActivations('unknown-session').length, 0);
+    await assert.rejects(
+      f.lifecycle.activateProject({ requestId: 'unknown-request', providerAdapter: provider }),
+      /Session has ended/,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    f.close();
+  }
+});
