@@ -218,7 +218,7 @@ The complete test command `npm test` passed on Android/Termux with Node `v26.3.1
 
 ### Gate 3 — Recovery and hardening
 
-The branch includes passing Termux tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, schema migration to v4 contribution attribution and the SLT-23 outgoing checkpoint boundary. SLA-02 A → B switching, SLA-03 A → B → A return, SLA-05 failed-switch recovery and SLA-06 contribution attribution all pass in the latest full run at `f4cff73` (28 passed, 0 failed, 7 TODO). Remaining work includes staleness detection and refresh, concurrent contribution handling, semantic non-judgement, cross-Project reference isolation, Session ending and the remaining integrity scenarios.
+The branch includes passing Termux tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, schema migration to v4 contribution attribution and the SLT-23 outgoing checkpoint boundary. SLA-02 A → B switching, SLA-03 A → B → A return, SLA-05 failed-switch recovery and SLA-06 contribution attribution all pass in the latest full run at `f4cff73` (28 passed, 0 failed, 7 TODO). SLA-07 staleness detection has now been implemented with exact handover event-sequence boundaries, append-only provenance markers, and coverage for contributions both after activation and during handover delivery; the new tests await Termux execution. SLA-08 refresh, concurrent contribution handling, semantic non-judgement, cross-Project reference isolation, Session ending and the remaining integrity scenarios are still outstanding.
 
 ### Gate 4 — Review
 
