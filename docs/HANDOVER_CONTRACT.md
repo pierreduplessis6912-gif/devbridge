@@ -54,7 +54,10 @@ The output format is `devbridge-handover-v2`. It includes:
 - `kernel`
 - `currentState`
 - `history`
+- `historyBoundary`, an exact Project event-sequence boundary with record/event counts and capture time
 - `completeness` and explicit record/event counts.
+
+The history boundary is captured from the same SQLite read snapshot as the handover records and events. It provides an ordered position for lifecycle staleness detection; timestamps alone are not used to decide whether a contribution is newer than a handover.
 
 The existing top-level `project` and `records` fields remain available during this initial implementation for straightforward consumers. They refer to the same project and included records as the new sections.
 
