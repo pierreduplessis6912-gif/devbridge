@@ -218,7 +218,7 @@ This is not the complete Session Lifecycle. The checkpoint foundation is impleme
 
 ### Gate 3 — Recovery and hardening
 
-The branch now includes tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation and separately authorised fresh-Session recovery. The remaining SLT-13 through SLT-20 checks still require implementation and/or execution.
+The branch now includes tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, v2-to-v3 Project event-sequence migration and the SLT-23 outgoing checkpoint boundary. These new checkpoint and migration tests still require execution in the user's Termux environment. The remaining SLT-13 through SLT-20 checks still require implementation and/or execution.
 
 ### Gate 4 — Review
 
