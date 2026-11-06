@@ -114,8 +114,9 @@ test('simulated provider rejects malformed delivery requests', async () => {
   );
 });
 
-// Scenarios not yet implemented remain explicit TODOs. Implemented coverage
-// currently includes initial activation, confirmation, delivery recovery and checkpoint foundations.
+// Scenarios without implementation/coverage remain explicit TODOs. Current
+// executable coverage includes initial activation, A-to-B switching, A-to-B-to-A
+// return, failed-switch recovery, confirmation trust and checkpoint foundations.
 test('SLA-02: switching A to B checkpoints A and activates B only after delivery', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-switch-project-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
