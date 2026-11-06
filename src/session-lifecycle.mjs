@@ -263,6 +263,37 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       )
       BEGIN SELECT RAISE(ABORT, 'activation requires matching confirmed acknowledged delivery and switch checkpoint'); END;
 
+    CREATE TRIGGER IF NOT EXISTS project_record_activation_attribution_insert
+      BEFORE INSERT ON project_records
+      WHEN (NEW.session_id IS NOT NULL
+        OR NEW.activation_id IS NOT NULL
+        OR NEW.handover_snapshot_id IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1 FROM project_activations a
+          JOIN activation_requests r ON r.id = a.activation_request_id
+          JOIN activation_confirmations c ON c.activation_request_id = r.id
+          JOIN context_delivery_attempts d ON d.id = a.delivery_attempt_id
+          WHERE a.id = NEW.activation_id
+            AND a.session_id = NEW.session_id
+            AND a.project_id = NEW.project_id
+            AND a.handover_snapshot_id = NEW.handover_snapshot_id
+            AND r.session_id = NEW.session_id
+            AND r.project_id = NEW.project_id
+            AND c.session_id = NEW.session_id
+            AND c.project_id = NEW.project_id
+            AND d.handover_snapshot_id = NEW.handover_snapshot_id
+            AND d.outcome = 'acknowledged'
+            AND d.acknowledgement_level IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM session_lifecycle_events ended
+              WHERE ended.activation_id = a.id
+                AND ended.event_type = 'activation_ended'
+            )
+        )
+      BEGIN
+        SELECT RAISE(ABORT, 'contribution requires an active confirmed Project Activation and matching acknowledged handover');
+      END;
+
     CREATE TRIGGER IF NOT EXISTS sessions_no_update BEFORE UPDATE ON sessions
       BEGIN SELECT RAISE(ABORT, 'sessions are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS sessions_no_delete BEFORE DELETE ON sessions
@@ -828,6 +859,29 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         reason: acknowledged ? null : outcome,
         activation, handoverId, deliveryAttemptId: attemptId,
       };
+    },
+
+    recordContribution({
+      sessionId, category, content, originType, originLabel = null,
+      sourceRef = null, statusText = null, relatedRecords = [],
+      recordedAt = new Date().toISOString(), id,
+    }) {
+      ensureOpen();
+      const session = requiredText(sessionId, 'sessionId');
+      const active = this.getActiveActivation(session);
+      if (!active) {
+        throw new Error('Session has no active confirmed Project Activation; contribution was not recorded');
+      }
+
+      // The store's insert trigger revalidates this exact activation, handover,
+      // confirmation and acknowledged delivery inside the record transaction.
+      // That closes the race with a concurrent activation-ending checkpoint.
+      return continuityStore.appendRecord({
+        id, projectId: active.projectId, category, content, originType,
+        originLabel, sourceRef, statusText, relatedRecords, recordedAt,
+        sessionId: active.sessionId, activationId: active.id,
+        handoverSnapshotId: active.handoverSnapshotId,
+      });
     },
 
     close() {
