@@ -366,4 +366,4 @@ The branch now includes a terminal Session-ending transition. It appends one `se
 
 An already-reserved contribution may finish committing because its submission was accepted before the Session ended. An in-flight provider delivery or context refresh may append its eventual outcome after Session ending, but a late acknowledgement cannot create an activation or resume the Session. Unknown delivery outcomes remain Unknown and are not replayed. Repeating the Session-ending operation returns the existing end event rather than appending another.
 
-Dedicated tests cover Project/history preservation, terminal operation guards, a late provider acknowledgement, and completion of a pre-end reserved contribution. The user must run the full test suite locally before SLA-12 can be marked verified or closed.
+Dedicated tests cover Project/history preservation, terminal operation guards, late acknowledged and Unknown provider outcomes, prevention of late activation/replay, and completion of a pre-end reserved contribution. The user must run the full test suite locally before SLA-12 can be marked verified or closed.
