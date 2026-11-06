@@ -140,3 +140,86 @@ test('SLA-07: a newer Project contribution marks other older active activations 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+
+test('SLA-07: a contribution arriving during handover delivery marks the new activation stale on activation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-staleness-during-delivery-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const firstLifecycle = openSessionLifecycle(databasePath, store, {
+    confirmationAuthority: authority,
+  });
+  const secondLifecycle = openSessionLifecycle(databasePath, store, {
+    confirmationAuthority: authority,
+  });
+
+  const activate = async (lifecycle, sessionId, requestId, projectId, providerAdapter) => {
+    lifecycle.requestProjectActivation({ sessionId, projectId, requestId });
+    await lifecycle.confirmProjectActivation({
+      requestId,
+      confirmationToken: authority.issue({ requestId, sessionId, projectId }),
+    });
+    return lifecycle.activateProject({ requestId, providerAdapter });
+  };
+
+  try {
+    store.createProject({ id: 'delivery-race-project', name: 'Delivery Race Project' });
+    firstLifecycle.createSession({ id: 'delivery-race-session-one' });
+    secondLifecycle.createSession({ id: 'delivery-race-session-two' });
+
+    const first = await activate(
+      firstLifecycle,
+      'delivery-race-session-one',
+      'delivery-race-request-one',
+      'delivery-race-project',
+      createSimulatedProvider(),
+    );
+    assert.equal(first.status, 'active');
+
+    const secondProvider = createSimulatedProvider();
+    let interveningContribution;
+    const providerDuringDelivery = {
+      capabilities: secondProvider.capabilities,
+      async deliver(request) {
+        // This happens after Session Two's handover has been persisted but
+        // before its activation has been committed.
+        interveningContribution = firstLifecycle.recordContribution({
+          id: 'delivery-race-record-one',
+          sessionId: 'delivery-race-session-one',
+          category: 'user_contribution',
+          content: 'A contribution arrived while Session Two handover was being delivered.',
+          originType: 'user',
+          sourceRef: 'session-one-during-delivery',
+          recordedAt: '2026-11-06T12:10:00.000Z',
+        });
+        return secondProvider.deliver(request);
+      },
+    };
+
+    const second = await activate(
+      secondLifecycle,
+      'delivery-race-session-two',
+      'delivery-race-request-two',
+      'delivery-race-project',
+      providerDuringDelivery,
+    );
+    assert.equal(second.status, 'active');
+    assert.ok(interveningContribution);
+
+    const markers = secondLifecycle.listStalenessMarkers('delivery-race-session-two');
+    assert.equal(markers.length, 1);
+    assert.equal(markers[0].targetActivationId, second.activation.id);
+    assert.equal(markers[0].targetHandoverSnapshotId, second.handoverId);
+    assert.equal(markers[0].newerRecordId, interveningContribution.id);
+    assert.equal(markers[0].sourceSessionId, 'delivery-race-session-one');
+    assert.equal(markers[0].sourceActivationId, first.activation.id);
+    assert.ok(markers[0].newerEventSequence > markers[0].targetHandoverEventSequence);
+    assert.equal(secondLifecycle.getActiveActivation('delivery-race-session-two').id, second.activation.id);
+  } finally {
+    firstLifecycle.close();
+    secondLifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
