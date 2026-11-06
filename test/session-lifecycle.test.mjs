@@ -114,8 +114,8 @@ test('simulated provider rejects malformed delivery requests', async () => {
   );
 });
 
-// Scenarios not yet implemented remain explicit TODOs. The lifecycle API below
-// exercises only the initial activation and confirmation boundary.
+// Scenarios not yet implemented remain explicit TODOs. Implemented coverage
+// currently includes initial activation, confirmation, delivery recovery and checkpoint foundations.
 test.todo('SLA-02: switching A to B checkpoints A and activates B only after delivery');
 test.todo('SLA-03: returning B to A creates a fresh A activation and handover');
 test.todo('SLA-05: failed transition preserves the outgoing checkpoint and all history');
@@ -465,7 +465,7 @@ test('SLT-21: provider acceptance followed by process death is never automatical
 });
 
 
-test('outgoing checkpoint captures a durable Project history boundary and ends only its activation', async () => {
+test('SLT-23: outgoing checkpoint captures a durable Project history boundary and ends only its activation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-checkpoint-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
   const store = openStore(databasePath);
@@ -525,6 +525,15 @@ test('outgoing checkpoint captures a durable Project history boundary and ends o
       }),
     });
 
+    await assert.rejects(
+      lifecycle.activateProject({
+        requestId: 'request-checkpoint-b',
+        providerAdapter: createSimulatedProvider(),
+      }),
+      /Outgoing Project Activation must be checkpointed/,
+    );
+    assert.equal(lifecycle.listDeliveryAttempts('session-checkpoint').length, 1);
+
     const checkpoint = lifecycle.checkpointActiveActivation({
       requestId: 'request-checkpoint-b',
     });
@@ -556,7 +565,7 @@ test('outgoing checkpoint captures a durable Project history boundary and ends o
       originType: 'user',
     });
     const laterBoundary = store.getProjectHistoryBoundary('project-checkpoint-a');
-    assert.ok(laterBoundary.eventSequence > checkpoint.projectEventSequence);
+    assert.equal(laterBoundary.eventSequence, checkpoint.projectEventSequence + 1);
     assert.equal(lifecycle.listCheckpoints('session-checkpoint')[0].projectEventSequence,
       checkpoint.projectEventSequence);
 
