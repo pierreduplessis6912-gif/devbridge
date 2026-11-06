@@ -264,7 +264,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       )
       BEGIN SELECT RAISE(ABORT, 'activation requires matching confirmed acknowledged delivery and switch checkpoint'); END;
 
-    CREATE TRIGGER IF NOT EXISTS project_record_activation_attribution_insert
+    DROP TRIGGER IF EXISTS project_record_activation_attribution_insert;
+    CREATE TRIGGER project_record_activation_attribution_insert
       BEFORE INSERT ON project_records
       WHEN (NEW.session_id IS NOT NULL
         OR NEW.activation_id IS NOT NULL
@@ -285,16 +286,62 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
             AND d.handover_snapshot_id = NEW.handover_snapshot_id
             AND d.outcome = 'acknowledged'
             AND d.acknowledgement_level IS NOT NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM session_lifecycle_events ended
-              WHERE ended.activation_id = a.id
-                AND ended.event_type = 'activation_ended'
+            AND (
+              NOT EXISTS (
+                SELECT 1 FROM session_lifecycle_events ended
+                WHERE ended.activation_id = a.id AND ended.event_type = 'activation_ended'
+              )
+              OR EXISTS (
+                SELECT 1 FROM contribution_intents ci
+                JOIN session_lifecycle_events session_end
+                  ON session_end.session_id = ci.session_id AND session_end.event_type = 'session_ended'
+                JOIN session_lifecycle_events activation_end
+                  ON activation_end.session_id = ci.session_id
+                  AND activation_end.activation_id = ci.activation_id
+                  AND activation_end.event_type = 'activation_ended'
+                  AND activation_end.sequence = session_end.sequence - 1
+                  AND activation_end.summary = 'Session ended; active Project Activation ended'
+                WHERE ci.record_id = NEW.id AND ci.session_id = NEW.session_id
+                  AND ci.activation_id = NEW.activation_id AND ci.project_id = NEW.project_id
+                  AND ci.handover_snapshot_id = NEW.handover_snapshot_id
+              )
             )
         )
       BEGIN
-        SELECT RAISE(ABORT, 'contribution requires an active confirmed Project Activation and matching acknowledged handover');
+        SELECT RAISE(ABORT, 'contribution requires an active confirmed Project Activation or a pre-end reserved submission');
       END;
 
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_activation_requests BEFORE INSERT ON activation_requests
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_confirmations BEFORE INSERT ON activation_confirmations
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_handovers BEFORE INSERT ON handover_snapshots
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_delivery_intents BEFORE INSERT ON context_delivery_intents
+      WHEN EXISTS (SELECT 1 FROM activation_requests r JOIN session_lifecycle_events e ON e.session_id=r.session_id WHERE r.id=NEW.activation_request_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_activations BEFORE INSERT ON project_activations
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended; activation cannot be created'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_checkpoints BEFORE INSERT ON outgoing_checkpoints
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_refresh_intents BEFORE INSERT ON activation_refresh_intents
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_contribution_intents BEFORE INSERT ON contribution_intents
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_event_once BEFORE INSERT ON session_lifecycle_events
+      WHEN NEW.event_type='session_ended' AND EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session may end only once'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_restricts_new_events BEFORE INSERT ON session_lifecycle_events
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events ended WHERE ended.session_id=NEW.session_id AND ended.event_type='session_ended')
+      AND NEW.event_type NOT IN ('delivery_acknowledged','delivery_failed','delivery_unknown','context_refresh_acknowledged','context_refresh_failed','context_refresh_unknown')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended; only outcomes of pre-existing provider operations may be recorded'); END;
     CREATE TRIGGER IF NOT EXISTS sessions_no_update BEFORE UPDATE ON sessions
       BEGIN SELECT RAISE(ABORT, 'sessions are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS sessions_no_delete BEFORE DELETE ON sessions
@@ -636,9 +683,13 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     getSession(sessionId) {
       ensureOpen();
       return db.prepare(`
-        SELECT id, provider_name AS providerName, model_name AS modelName,
-          external_conversation_id AS externalConversationId, created_at AS createdAt
-        FROM sessions WHERE id = ?
+        SELECT s.id, s.provider_name AS providerName, s.model_name AS modelName,
+          s.external_conversation_id AS externalConversationId, s.created_at AS createdAt,
+          CASE WHEN ended.occurred_at IS NULL THEN 'active' ELSE 'ended' END AS status,
+          ended.occurred_at AS endedAt
+        FROM sessions s LEFT JOIN session_lifecycle_events ended
+          ON ended.session_id=s.id AND ended.event_type='session_ended'
+        WHERE s.id = ?
       `).get(requiredText(sessionId, 'sessionId')) ?? null;
     },
 
@@ -691,10 +742,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           a.delivery_attempt_id AS deliveryAttemptId, a.activated_at AS activatedAt
         FROM project_activations a
         WHERE a.session_id = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM session_lifecycle_events e
-            WHERE e.activation_id = a.id AND e.event_type = 'activation_ended'
-          )
+          AND NOT EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.activation_id=a.id AND e.event_type='activation_ended')
+          AND NOT EXISTS (SELECT 1 FROM session_lifecycle_events ended WHERE ended.session_id=a.session_id AND ended.event_type='session_ended')
         ORDER BY a.rowid DESC LIMIT 1
       `).get(requiredText(sessionId, 'sessionId')) ?? null;
     },
@@ -727,10 +776,13 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       const project = requiredText(projectId, 'projectId');
       const request = requiredText(requestId, 'requestId');
       const timestamp = requiredText(requestedAt, 'requestedAt');
-      if (!this.getSession(session)) throw new Error('Session not found: ' + session);
+      const sessionRecord = this.getSession(session);
+      if (!sessionRecord) throw new Error('Session not found: ' + session);
+      if (sessionRecord.status === 'ended') throw new Error('Session has ended');
       if (!continuityStore.getProject(project)) throw new Error('Project not found: ' + project);
 
       withTransaction(db, () => {
+        if (db.prepare("SELECT 1 FROM session_lifecycle_events WHERE session_id=? AND event_type='session_ended'").get(session)) throw new Error('Session has ended');
         const active = db.prepare(`
           SELECT a.id AS activationId, a.project_id AS projectId FROM project_activations a
           WHERE a.session_id = ?
@@ -808,6 +860,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       `).get(request);
       if (!incoming) throw new Error('Checkpoint requires a confirmed incoming activation request');
 
+      if (this.getSession(incoming.sessionId)?.status === 'ended') throw new Error('Session has ended');
       const outgoing = this.getActiveActivation(incoming.sessionId);
       if (!outgoing) throw new Error('Session has no active outgoing Project Activation to checkpoint');
       if (incoming.requestedFromActivationId !== outgoing.id) {
@@ -897,9 +950,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         SELECT r.id, r.session_id AS sessionId, r.project_id AS projectId
         FROM activation_requests r
         WHERE r.id = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM activation_confirmations c WHERE c.activation_request_id = r.id
-          )
+          AND NOT EXISTS (SELECT 1 FROM activation_confirmations c WHERE c.activation_request_id = r.id)
+          AND NOT EXISTS (SELECT 1 FROM session_lifecycle_events ended WHERE ended.session_id=r.session_id AND ended.event_type='session_ended')
       `).get(request);
       if (!pending) throw new Error('Pending activation request not found or already confirmed');
 
@@ -924,6 +976,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         const stillPending = db.prepare(`
           SELECT 1 FROM activation_requests r
           WHERE r.id = ?
+            AND NOT EXISTS (SELECT 1 FROM session_lifecycle_events ended WHERE ended.session_id=r.session_id AND ended.event_type='session_ended')
             AND NOT EXISTS (
               SELECT 1 FROM activation_confirmations c WHERE c.activation_request_id = r.id
             )
@@ -966,7 +1019,9 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         throw new Error('Activation request requires trusted user confirmation before delivery');
       }
       const { sessionId: session, projectId: project } = activationRequest;
-      if (!this.getSession(session)) throw new Error('Session not found: ' + session);
+      const sessionRecord = this.getSession(session);
+      if (!sessionRecord) throw new Error('Session not found: ' + session);
+      if (sessionRecord.status === 'ended') throw new Error('Session has ended');
       if (!continuityStore.getProject(project)) throw new Error('Project not found: ' + project);
       if (this.getActiveActivation(session)) {
         throw new Error('Outgoing Project Activation must be checkpointed before incoming activation delivery');
@@ -1010,6 +1065,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       const deliveryId = randomUUID();
       const generatedAt = requiredText(handover.generatedAt, 'handover.generatedAt');
       withTransaction(db, () => {
+        if (db.prepare("SELECT 1 FROM session_lifecycle_events WHERE session_id=? AND event_type='session_ended'").get(session)) throw new Error('Session has ended');
         const active = db.prepare(`
           SELECT 1 FROM project_activations a
           WHERE a.session_id = ?
@@ -1113,7 +1169,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           occurredAt: attemptedAt,
         });
 
-        if (acknowledged) {
+        const sessionEnded = Boolean(db.prepare("SELECT 1 FROM session_lifecycle_events WHERE session_id=? AND event_type='session_ended'").get(session));
+        if (acknowledged && !sessionEnded) {
           const activationId = randomUUID();
           db.prepare(`
             INSERT INTO project_activations
@@ -1137,8 +1194,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       });
 
       return {
-        status: acknowledged ? 'active' : 'blocked',
-        reason: acknowledged ? null : outcome,
+        status: acknowledged && activation ? 'active' : 'blocked',
+        reason: activation ? null : (this.getSession(session)?.status === 'ended' ? 'session_ended' : outcome),
         activation, handoverId, deliveryAttemptId: attemptId,
       };
     },
@@ -1189,6 +1246,9 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     async refreshStaleActivation({ sessionId, providerAdapter }) {
       ensureOpen();
       const session = requiredText(sessionId, 'sessionId');
+      const sessionRecord = this.getSession(session);
+      if (!sessionRecord) throw new Error('Session not found: ' + session);
+      if (sessionRecord.status === 'ended') throw new Error('Session has ended');
       const active = this.getActiveActivation(session);
       if (!active) throw new Error('Session has no active Project Activation to refresh');
       const staleMarkers = this.listUnaddressedStalenessMarkers(session);
@@ -1217,6 +1277,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       const deliveryId = randomUUID();
       const generatedAt = requiredText(handover.generatedAt, 'handover.generatedAt');
       withTransaction(db, () => {
+        if (db.prepare("SELECT 1 FROM session_lifecycle_events WHERE session_id=? AND event_type='session_ended'").get(session)) throw new Error('Session has ended');
         const stillActive = db.prepare(`
           SELECT 1 FROM project_activations a
           WHERE a.id = ? AND a.session_id = ? AND a.project_id = ?
@@ -1287,10 +1348,11 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           occurredAt: attemptedAt,
         });
       });
+      const sessionEnded = this.getSession(session)?.status === 'ended';
       const remaining = this.listUnaddressedStalenessMarkers(session);
       return {
-        status: acknowledged ? (remaining.length ? 'stale' : 'refreshed') : 'blocked',
-        reason: acknowledged ? (remaining.length ? 'newer_contribution_during_refresh' : null) : outcome,
+        status: sessionEnded ? 'blocked' : acknowledged ? (remaining.length ? 'stale' : 'refreshed') : 'blocked',
+        reason: sessionEnded ? 'session_ended' : acknowledged ? (remaining.length ? 'newer_contribution_during_refresh' : null) : outcome,
         activationId: active.id, refreshIntentId: intentId, deliveryAttemptId: attemptId,
         deliveredEventSequence: boundary.eventSequence,
         remainingStalenessMarkers: remaining,
@@ -1382,10 +1444,20 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     commitContribution({ intentId }) {
       ensureOpen();
       const intent = db.prepare(`
-        SELECT id, record_id AS recordId, payload_json AS payloadJson
+        SELECT id, record_id AS recordId, payload_json AS payloadJson,
+          session_id AS sessionId, activation_id AS activationId
         FROM contribution_intents WHERE id = ?
       `).get(requiredText(intentId, 'intentId'));
       if (!intent) throw new Error('Contribution intent not found');
+      const sessionEnd = db.prepare(`
+        SELECT ended.sequence AS endSequence FROM session_lifecycle_events ended
+        JOIN session_lifecycle_events activationEnd ON activationEnd.session_id=ended.session_id
+          AND activationEnd.activation_id=? AND activationEnd.event_type='activation_ended'
+          AND activationEnd.sequence=ended.sequence-1
+          AND activationEnd.summary='Session ended; active Project Activation ended'
+        WHERE ended.session_id=? AND ended.event_type='session_ended'
+      `).get(intent.activationId,intent.sessionId);
+      if (this.getSession(intent.sessionId)?.status === 'ended' && !sessionEnd) throw new Error('Session has ended; only a pre-end reserved contribution may finish');
       const existing = continuityStore.getRecord(intent.recordId);
       if (existing) {
         if (existing.sessionId !== db.prepare(
@@ -1416,6 +1488,30 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         statusText, relatedRecords, recordedAt, id,
       });
       return this.commitContribution({ intentId: prepared.intentId });
+    },
+
+    endSession({ sessionId, endedAt = new Date().toISOString() }) {
+      ensureOpen();
+      const session = requiredText(sessionId, 'sessionId');
+      const timestamp = requiredText(endedAt, 'endedAt');
+      const existing = db.prepare("SELECT id,sequence,occurred_at AS occurredAt,summary FROM session_lifecycle_events WHERE session_id=? AND event_type='session_ended'").get(session);
+      if (existing) return { status: 'already_ended', session: this.getSession(session), event: existing };
+      if (!this.getSession(session)) throw new Error('Session not found: ' + session);
+      let endedEvent;
+      withTransaction(db, () => {
+        const prior = db.prepare("SELECT id,sequence,occurred_at AS occurredAt,summary FROM session_lifecycle_events WHERE session_id=? AND event_type='session_ended'").get(session);
+        if (prior) { endedEvent = prior; return; }
+        const active = this.getActiveActivation(session);
+        if (active) appendEvent({ sessionId:session,eventType:'activation_ended',projectId:active.projectId,
+          activationRequestId:active.activationRequestId,activationId:active.id,handoverSnapshotId:active.handoverSnapshotId,
+          summary:'Session ended; active Project Activation ended',occurredAt:timestamp });
+        appendEvent({ sessionId:session,eventType:'session_ended',projectId:active?.projectId ?? null,
+          activationRequestId:active?.activationRequestId ?? null,activationId:active?.id ?? null,
+          handoverSnapshotId:active?.handoverSnapshotId ?? null,
+          summary:'DevBridge Session ended; Project identity and history retained',occurredAt:timestamp });
+        endedEvent = db.prepare("SELECT id,sequence,occurred_at AS occurredAt,summary FROM session_lifecycle_events WHERE session_id=? AND event_type='session_ended'").get(session);
+      });
+      return { status:'ended',session:this.getSession(session),event:endedEvent };
     },
 
     close() {
