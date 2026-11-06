@@ -225,7 +225,15 @@ test('SLA-08: stale activation pauses its next continuation until an acknowledge
   const authority = createSimulatedConfirmationAuthority();
   const firstLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
   const secondLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
-  const provider = createSimulatedProvider({ outcomes: ['acknowledged', 'acknowledged', 'acknowledged'] });
+  const baseProvider = createSimulatedProvider({ outcomes: ['acknowledged', 'acknowledged', 'acknowledged'] });
+  const deliveredRequests = [];
+  const provider = {
+    capabilities: baseProvider.capabilities,
+    async deliver(request) {
+      deliveredRequests.push(request);
+      return baseProvider.deliver(request);
+    },
+  };
 
   const activate = async (lifecycle, sessionId, requestId, projectId) => {
     lifecycle.requestProjectActivation({ sessionId, projectId, requestId });
@@ -272,6 +280,9 @@ test('SLA-08: stale activation pauses its next continuation until an acknowledge
     assert.equal(refreshed.status, 'refreshed');
     assert.equal(refreshed.activationId, first.activation.id);
     assert.ok(refreshed.deliveredEventSequence > originalMarkers[0].targetHandoverEventSequence);
+    assert.ok(deliveredRequests[2].handover.payload.records.some((record) => record.id === newer.id));
+    assert.equal(deliveredRequests[2].handover.payload.historyBoundary.eventSequence,
+      refreshed.deliveredEventSequence);
     assert.equal(refreshed.remainingStalenessMarkers.length, 0);
     assert.equal(firstLifecycle.listStalenessMarkers('refresh-session-one').length, 1);
     assert.equal(firstLifecycle.listUnaddressedStalenessMarkers('refresh-session-one').length, 0);
