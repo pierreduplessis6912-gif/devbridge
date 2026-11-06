@@ -536,7 +536,7 @@ export function openStore(databasePath) {
         if (deviceId !== null && requiredText(deviceId, 'deviceId') !== existing.deviceId) {
           throw new Error('A local sync device is already configured; device replacement requires the recovery workflow');
         }
-        return existing;
+        return { deviceId: existing.deviceId, createdAt: existing.createdAt };
       }
       const id = requiredText(deviceId ?? randomUUID(), 'deviceId');
       db.prepare('INSERT INTO sync_local_device (singleton_id, device_id, created_at) VALUES (1, ?, ?)').run(id, timestamp);
@@ -545,9 +545,11 @@ export function openStore(databasePath) {
 
     getLocalSyncDevice() {
       ensureOpen();
-      return db.prepare(
+      const row = db.prepare(
         'SELECT device_id AS deviceId, created_at AS createdAt FROM sync_local_device WHERE singleton_id = 1',
-      ).get() ?? null;
+      ).get();
+
+      return row ? { deviceId: row.deviceId, createdAt: row.createdAt } : null;
     },
 
     enableProjectSync(projectId, { enabledAt = new Date().toISOString() } = {}) {
