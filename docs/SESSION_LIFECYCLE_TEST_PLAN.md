@@ -266,3 +266,20 @@ Verified locally by the user on Android/Termux with Node.js v26.3.1 after pullin
 - Duration: 1467.187292 ms
 
 The dedicated test `SLA-09: overlapping Session submissions are both retained with distinct attribution` passed. The six TODO entries are acceptance-plan placeholders, not failed or skipped tests. This verifies the implemented overlapping-submission scenario in the local SQLite test environment; it does not establish multi-process production concurrency or provider integration behaviour.
+
+### SLA-10 Termux verification
+
+Verified locally by the user on Android/Termux with Node.js v26.3.1 after pulling commit `e4804b5`:
+
+- Command: `npm test`
+- Tests: 42
+- Passed: 36
+- Failed: 0
+- Cancelled: 0
+- Skipped: 0
+- TODO placeholders: 6
+- Duration: 1417.595937 ms
+
+The dedicated test `SLA-10: differing concurrent contributions remain neutral until an attributed contribution records a relationship` passed. It verifies that differing concurrent statements remain separately preserved and attributed; staleness markers do not create semantic conflict judgements; no automatic relationship or conflict event/table is introduced; and a relationship such as `contradicts` is recorded only through a new attributed contribution explicitly supplied by the user.
+
+The six TODO entries are remaining acceptance placeholders, not failed or skipped tests. This run verifies the implemented SLA-10 scenario in the local SQLite test environment. It does not establish real-provider behaviour, production authentication, multi-process production concurrency or production readiness.
