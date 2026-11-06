@@ -252,10 +252,18 @@ test('SLA-08: stale activation pauses its next continuation until an acknowledge
     const originalMarkers = firstLifecycle.listStalenessMarkers('refresh-session-one');
     assert.equal(originalMarkers.length, 1);
     assert.equal(originalMarkers[0].newerRecordId, newer.id);
-    assert.throws(() => firstLifecycle.recordContribution({
+    const blocked = assert.throws(() => firstLifecycle.recordContribution({
       id: 'refresh-blocked-record', sessionId: 'refresh-session-one',
       category: 'ai_contribution', content: 'Must not continue before refresh.',
       originType: 'ai',
+    }), /stale Project context must be refreshed/);
+    assert.equal(blocked.code, 'STALE_CONTEXT_REFRESH_REQUIRED');
+    assert.equal(blocked.stalenessMarkers[0].newerRecordId, newer.id);
+    assert.throws(() => store.appendRecord({
+      id: 'refresh-direct-store-bypass', projectId: 'refresh-project',
+      category: 'ai_contribution', content: 'Direct store insertion must also be blocked.',
+      originType: 'ai', sessionId: 'refresh-session-one',
+      activationId: first.activation.id, handoverSnapshotId: first.handoverId,
     }), /stale Project context must be refreshed/);
 
     const refreshed = await firstLifecycle.refreshStaleActivation({
