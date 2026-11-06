@@ -94,7 +94,7 @@ Test controls should allow the same scenario to produce different outcomes on su
 | SLT-02 | SLA-02 Switch A → B | A checkpoint persists; B activation waits for acknowledgement; one active primary Project |
 | SLT-03 | SLA-03 Return B → A | New A activation and handover; newer A record included; earlier A handover retained |
 | SLT-04 | SLA-04 Failed/unknown delivery | Target remains inactive; transition blocked; no continuation attributed to target |
-| SLT-05 | SLA-05 Checkpoint survives failure | Outgoing checkpoint and history remain after incoming failure; retry appends attempt |
+| SLT-05 | SLA-05 Checkpoint survives failure | Outgoing activation remains ended; failed incoming delivery creates no activation; recovery requires a fresh confirmed activation and handover; original checkpoint and attempts remain immutable |
 | SLT-06 | SLA-06 Contribution attribution | Each record maps to exact active Project, Session and Activation; no active activation rejects continuation |
 | SLT-07 | SLA-07 Staleness detection | New contribution beyond another activation's handover boundary marks that activation potentially stale |
 | SLT-08 | SLA-08 Deferred refresh | Ongoing work not interrupted at marker creation; next continuation pauses; acknowledged fresh delivery required |
@@ -218,7 +218,7 @@ This is not the complete Session Lifecycle. The checkpoint foundation and an A �
 
 ### Gate 3 — Recovery and hardening
 
-The branch includes tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, v2-to-v3 Project event-sequence migration and the SLT-23 outgoing checkpoint boundary. The SLA-03 A → B → A return-path test has now been added and awaits execution in Termux. The remaining SLT-05 through SLT-20 scenarios still require implementation and/or execution.
+The branch includes tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, v2-to-v3 Project event-sequence migration and the SLT-23 outgoing checkpoint boundary. The SLA-03 A → B → A return-path test has passed in Termux. The SLA-05 failed-switch recovery test has been added and awaits execution in Termux. The remaining SLT-02 and SLT-06 through SLT-20 scenarios still require implementation and/or execution.
 
 ### Gate 4 — Review
 
