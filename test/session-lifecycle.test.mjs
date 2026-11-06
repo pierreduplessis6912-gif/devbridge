@@ -569,7 +569,6 @@ test('SLA-05: failed switch preserves the checkpoint and recovery creates a fres
 });
 test.todo('SLA-06: contributions use the active Project Activation');
 test.todo('SLA-07: a newer contribution marks another active activation potentially stale');
-test.todo('SLA-08: a stale activation refreshes before its next continuation');
 test.todo('SLA-09: concurrent contributions remain distinct and attributable');
 test.todo('SLA-10: concurrency and staleness do not become semantic conflict judgements');
 test.todo('SLA-11: cross-Project reference does not activate or disclose another Project');
