@@ -237,7 +237,7 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
         projectId: 'project-a',
         requestId: 'request-duplicate',
       }),
-      /already has an active Project Activation/,
+      /Project is already the active Project Activation/,
     );
     assert.equal(lifecycle.listActivations('session-1').length, 1);
   } finally {
@@ -460,6 +460,134 @@ test('SLT-21: provider acceptance followed by process death is never automatical
     lifecycle.close();
     reopened?.close();
     store?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('outgoing checkpoint captures a durable Project history boundary and ends only its activation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-checkpoint-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+
+  try {
+    store.createProject({ id: 'project-checkpoint-a', name: 'Checkpoint A' });
+    store.createProject({ id: 'project-checkpoint-b', name: 'Checkpoint B' });
+    store.appendRecord({
+      id: 'checkpoint-a-record-1',
+      projectId: 'project-checkpoint-a',
+      category: 'requirement',
+      content: 'Initial A requirement',
+      originType: 'user',
+    });
+    lifecycle.createSession({ id: 'session-checkpoint' });
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-checkpoint',
+      projectId: 'project-checkpoint-a',
+      requestId: 'request-checkpoint-a',
+    });
+    await lifecycle.confirmProjectActivation({
+      requestId: 'request-checkpoint-a',
+      confirmationToken: authority.issue({
+        requestId: 'request-checkpoint-a',
+        sessionId: 'session-checkpoint',
+        projectId: 'project-checkpoint-a',
+      }),
+    });
+    const first = await lifecycle.activateProject({
+      requestId: 'request-checkpoint-a',
+      providerAdapter: createSimulatedProvider(),
+    });
+    assert.equal(first.status, 'active');
+
+    store.appendRecord({
+      id: 'checkpoint-a-record-2',
+      projectId: 'project-checkpoint-a',
+      category: 'change',
+      content: 'A contribution recorded before switching',
+      originType: 'ai',
+    });
+    const boundaryBeforeCheckpoint = store.getProjectHistoryBoundary('project-checkpoint-a');
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-checkpoint',
+      projectId: 'project-checkpoint-b',
+      requestId: 'request-checkpoint-b',
+    });
+    await lifecycle.confirmProjectActivation({
+      requestId: 'request-checkpoint-b',
+      confirmationToken: authority.issue({
+        requestId: 'request-checkpoint-b',
+        sessionId: 'session-checkpoint',
+        projectId: 'project-checkpoint-b',
+      }),
+    });
+
+    const checkpoint = lifecycle.checkpointActiveActivation({
+      requestId: 'request-checkpoint-b',
+    });
+    assert.equal(checkpoint.sessionId, 'session-checkpoint');
+    assert.equal(checkpoint.projectId, 'project-checkpoint-a');
+    assert.equal(checkpoint.outgoingActivationId, first.activation.id);
+    assert.equal(checkpoint.incomingActivationRequestId, 'request-checkpoint-b');
+    assert.equal(checkpoint.handoverSnapshotId, first.handoverId);
+    assert.equal(checkpoint.projectEventSequence, boundaryBeforeCheckpoint.eventSequence);
+    assert.equal(checkpoint.projectEventId, boundaryBeforeCheckpoint.lastEventId);
+    assert.equal(checkpoint.projectRecordCount, 2);
+    assert.equal(checkpoint.projectEventCount, boundaryBeforeCheckpoint.eventCount);
+    assert.equal(checkpoint.lifecycleEventSequence, 7);
+    assert.equal(lifecycle.getActiveActivation('session-checkpoint'), null);
+
+    const checkpointEvents = lifecycle.listEvents('session-checkpoint').slice(-2);
+    assert.deepEqual(checkpointEvents.map((event) => event.eventType), [
+      'activation_checkpointed',
+      'activation_ended',
+    ]);
+    assert.ok(checkpointEvents.every((event) => event.checkpointId === checkpoint.id));
+    assert.equal(checkpointEvents.at(-1).activationId, first.activation.id);
+
+    store.appendRecord({
+      id: 'checkpoint-a-record-after',
+      projectId: 'project-checkpoint-a',
+      category: 'status',
+      content: 'A later contribution after the checkpoint',
+      originType: 'user',
+    });
+    const laterBoundary = store.getProjectHistoryBoundary('project-checkpoint-a');
+    assert.ok(laterBoundary.eventSequence > checkpoint.projectEventSequence);
+    assert.equal(lifecycle.listCheckpoints('session-checkpoint')[0].projectEventSequence,
+      checkpoint.projectEventSequence);
+
+    const inspect = new DatabaseSync(databasePath);
+    try {
+      assert.throws(
+        () => inspect.prepare(
+          "UPDATE outgoing_checkpoints SET checkpointed_at = 'changed' WHERE id = ?",
+        ).run(checkpoint.id),
+        /append-only/,
+      );
+      assert.throws(
+        () => inspect.prepare(
+          'DELETE FROM outgoing_checkpoints WHERE id = ?',
+        ).run(checkpoint.id),
+        /append-only/,
+      );
+    } finally {
+      inspect.close();
+    }
+
+    const switched = await lifecycle.activateProject({
+      requestId: 'request-checkpoint-b',
+      providerAdapter: createSimulatedProvider(),
+    });
+    assert.equal(switched.status, 'active');
+    assert.equal(lifecycle.getActiveActivation('session-checkpoint').projectId, 'project-checkpoint-b');
+    assert.equal(lifecycle.listActivations('session-checkpoint').length, 2);
+  } finally {
+    lifecycle.close();
+    store.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });
