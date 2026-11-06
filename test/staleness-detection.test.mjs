@@ -90,26 +90,19 @@ test('SLA-07: a newer Project contribution marks other older active activations 
     assert.equal(firstMarkers[0].sourceActivationId, second.activation.id);
     assert.equal(secondMarkersBefore.length, 0);
 
-    // SLA-07 is a marker, not an interruption: Session One remains active
-    // and may continue. Its own contribution must not stale itself.
+    // Marker creation does not end or interrupt the activation. The next
+    // continuation is separately gated by SLA-08 until fresh context is acknowledged.
     assert.equal(firstLifecycle.getActiveActivation('staleness-session-one').id, first.activation.id);
-    const fromFirst = firstLifecycle.recordContribution({
+    assert.throws(() => firstLifecycle.recordContribution({
       id: 'staleness-record-one',
       sessionId: 'staleness-session-one',
       category: 'ai_contribution',
-      content: 'Session One continues after the marker.',
+      content: 'This continuation must wait for context refresh.',
       originType: 'ai',
       sourceRef: 'session-one-follow-up',
       recordedAt: '2026-11-06T12:01:00.000Z',
-    });
+    }), /stale Project context must be refreshed/);
     assert.equal(firstLifecycle.getActiveActivation('staleness-session-one').id, first.activation.id);
-
-    const secondMarkers = secondLifecycle.listStalenessMarkers('staleness-session-two');
-    assert.equal(secondMarkers.length, 1);
-    assert.equal(secondMarkers[0].targetActivationId, second.activation.id);
-    assert.equal(secondMarkers[0].newerRecordId, fromFirst.id);
-    assert.equal(secondMarkers[0].sourceSessionId, 'staleness-session-one');
-    assert.equal(secondMarkers[0].sourceActivationId, first.activation.id);
 
     // Markers preserve version/provenance facts only; no conflict or winner
     // judgement is created, and marker history cannot be rewritten.
@@ -216,6 +209,200 @@ test('SLA-07: a contribution arriving during handover delivery marks the new act
     assert.equal(markers[0].sourceActivationId, first.activation.id);
     assert.ok(markers[0].newerEventSequence > markers[0].targetHandoverEventSequence);
     assert.equal(secondLifecycle.getActiveActivation('delivery-race-session-two').id, second.activation.id);
+  } finally {
+    firstLifecycle.close();
+    secondLifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('SLA-08: stale activation pauses its next continuation until an acknowledged fresh handover', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-refresh-success-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const firstLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const secondLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const provider = createSimulatedProvider({ outcomes: ['acknowledged', 'acknowledged', 'acknowledged'] });
+
+  const activate = async (lifecycle, sessionId, requestId, projectId) => {
+    lifecycle.requestProjectActivation({ sessionId, projectId, requestId });
+    await lifecycle.confirmProjectActivation({
+      requestId, confirmationToken: authority.issue({ requestId, sessionId, projectId }),
+    });
+    return lifecycle.activateProject({ requestId, providerAdapter: provider });
+  };
+
+  try {
+    store.createProject({ id: 'refresh-project', name: 'Refresh Project' });
+    firstLifecycle.createSession({ id: 'refresh-session-one' });
+    secondLifecycle.createSession({ id: 'refresh-session-two' });
+    const first = await activate(firstLifecycle, 'refresh-session-one', 'refresh-request-one', 'refresh-project');
+    const second = await activate(secondLifecycle, 'refresh-session-two', 'refresh-request-two', 'refresh-project');
+    assert.equal(first.status, 'active');
+    assert.equal(second.status, 'active');
+
+    const newer = secondLifecycle.recordContribution({
+      id: 'refresh-newer-record', sessionId: 'refresh-session-two',
+      category: 'decision', content: 'A newer project decision.',
+      originType: 'user', recordedAt: '2026-11-06T12:20:00.000Z',
+    });
+    const originalMarkers = firstLifecycle.listStalenessMarkers('refresh-session-one');
+    assert.equal(originalMarkers.length, 1);
+    assert.equal(originalMarkers[0].newerRecordId, newer.id);
+    assert.throws(() => firstLifecycle.recordContribution({
+      id: 'refresh-blocked-record', sessionId: 'refresh-session-one',
+      category: 'ai_contribution', content: 'Must not continue before refresh.',
+      originType: 'ai',
+    }), /stale Project context must be refreshed/);
+
+    const refreshed = await firstLifecycle.refreshStaleActivation({
+      sessionId: 'refresh-session-one', providerAdapter: provider,
+    });
+    assert.equal(refreshed.status, 'refreshed');
+    assert.equal(refreshed.activationId, first.activation.id);
+    assert.ok(refreshed.deliveredEventSequence > originalMarkers[0].targetHandoverEventSequence);
+    assert.equal(refreshed.remainingStalenessMarkers.length, 0);
+    assert.equal(firstLifecycle.listStalenessMarkers('refresh-session-one').length, 1);
+    assert.equal(firstLifecycle.listUnaddressedStalenessMarkers('refresh-session-one').length, 0);
+    assert.equal(firstLifecycle.getActiveActivation('refresh-session-one').id, first.activation.id);
+    assert.equal(firstLifecycle.getActiveActivation('refresh-session-one').handoverSnapshotId, first.handoverId);
+    assert.deepEqual(firstLifecycle.listRefreshAttempts('refresh-session-one').map((item) => item.outcome), ['acknowledged']);
+
+    const continued = firstLifecycle.recordContribution({
+      id: 'refresh-after-ack-record', sessionId: 'refresh-session-one',
+      category: 'ai_contribution', content: 'Continuation after acknowledged refresh.',
+      originType: 'ai',
+    });
+    assert.equal(store.getRecord(continued.id).activationId, first.activation.id);
+
+    const inspect = new DatabaseSync(databasePath);
+    try {
+      assert.throws(
+        () => inspect.prepare("UPDATE activation_refresh_intents SET created_at = 'changed'").run(),
+        /append-only/,
+      );
+      assert.throws(
+        () => inspect.prepare("DELETE FROM activation_refresh_attempts").run(),
+        /append-only/,
+      );
+    } finally { inspect.close(); }
+  } finally {
+    firstLifecycle.close();
+    secondLifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('SLA-08: failed refresh can be explicitly prepared again, but unknown refresh is never replayed', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-refresh-outcomes-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const firstLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const secondLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const provider = createSimulatedProvider({ outcomes: ['acknowledged', 'acknowledged', 'failed', 'acknowledged'] });
+
+  const activate = async (lifecycle, sessionId, requestId) => {
+    lifecycle.requestProjectActivation({ sessionId, projectId: 'refresh-outcome-project', requestId });
+    await lifecycle.confirmProjectActivation({
+      requestId, confirmationToken: authority.issue({ requestId, sessionId, projectId: 'refresh-outcome-project' }),
+    });
+    return lifecycle.activateProject({ requestId, providerAdapter: provider });
+  };
+
+  try {
+    store.createProject({ id: 'refresh-outcome-project', name: 'Refresh Outcome Project' });
+    firstLifecycle.createSession({ id: 'refresh-outcome-one' });
+    secondLifecycle.createSession({ id: 'refresh-outcome-two' });
+    const first = await activate(firstLifecycle, 'refresh-outcome-one', 'refresh-outcome-request-one');
+    await activate(secondLifecycle, 'refresh-outcome-two', 'refresh-outcome-request-two');
+    secondLifecycle.recordContribution({
+      id: 'refresh-outcome-newer', sessionId: 'refresh-outcome-two',
+      category: 'status', content: 'New status.', originType: 'user',
+    });
+
+    const failed = await firstLifecycle.refreshStaleActivation({
+      sessionId: 'refresh-outcome-one', providerAdapter: provider,
+    });
+    assert.equal(failed.status, 'blocked');
+    assert.equal(failed.reason, 'failed');
+    assert.equal(firstLifecycle.getActiveActivation('refresh-outcome-one').id, first.activation.id);
+    assert.equal(firstLifecycle.listUnaddressedStalenessMarkers('refresh-outcome-one').length, 1);
+
+    const recovered = await firstLifecycle.refreshStaleActivation({
+      sessionId: 'refresh-outcome-one', providerAdapter: provider,
+    });
+    assert.equal(recovered.status, 'refreshed');
+    assert.deepEqual(firstLifecycle.listRefreshAttempts('refresh-outcome-one').map((item) => item.outcome), ['failed', 'acknowledged']);
+  } finally {
+    firstLifecycle.close();
+    secondLifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('SLA-08: a contribution arriving during refresh remains newer than its acknowledged boundary', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-refresh-race-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const firstLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const secondLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const baseProvider = createSimulatedProvider({ outcomes: ['acknowledged', 'acknowledged', 'acknowledged', 'acknowledged'] });
+  const activate = async (lifecycle, sessionId, requestId) => {
+    lifecycle.requestProjectActivation({ sessionId, projectId: 'refresh-race-project', requestId });
+    await lifecycle.confirmProjectActivation({
+      requestId, confirmationToken: authority.issue({ requestId, sessionId, projectId: 'refresh-race-project' }),
+    });
+    return lifecycle.activateProject({ requestId, providerAdapter: baseProvider });
+  };
+
+  try {
+    store.createProject({ id: 'refresh-race-project', name: 'Refresh Race Project' });
+    firstLifecycle.createSession({ id: 'refresh-race-one' });
+    secondLifecycle.createSession({ id: 'refresh-race-two' });
+    const first = await activate(firstLifecycle, 'refresh-race-one', 'refresh-race-request-one');
+    await activate(secondLifecycle, 'refresh-race-two', 'refresh-race-request-two');
+    secondLifecycle.recordContribution({
+      id: 'refresh-race-initial-newer', sessionId: 'refresh-race-two',
+      category: 'decision', content: 'Initial newer contribution.',
+      originType: 'user',
+    });
+
+    const duringDelivery = {
+      capabilities: baseProvider.capabilities,
+      async deliver(request) {
+        secondLifecycle.recordContribution({
+          id: 'refresh-race-during-record', sessionId: 'refresh-race-two',
+          category: 'change', content: 'A contribution arrived after the refresh boundary.',
+          originType: 'user',
+        });
+        return baseProvider.deliver(request);
+      },
+    };
+    const firstRefresh = await firstLifecycle.refreshStaleActivation({
+      sessionId: 'refresh-race-one', providerAdapter: duringDelivery,
+    });
+    assert.equal(firstRefresh.status, 'stale');
+    assert.equal(firstRefresh.reason, 'newer_contribution_during_refresh');
+    assert.equal(firstRefresh.remainingStalenessMarkers.length, 1);
+    assert.equal(firstRefresh.remainingStalenessMarkers[0].newerRecordId, 'refresh-race-during-record');
+    assert.throws(() => firstLifecycle.recordContribution({
+      id: 'refresh-race-blocked', sessionId: 'refresh-race-one',
+      category: 'ai_contribution', content: 'Still blocked.',
+      originType: 'ai',
+    }), /stale Project context must be refreshed/);
+
+    const secondRefresh = await firstLifecycle.refreshStaleActivation({
+      sessionId: 'refresh-race-one', providerAdapter: baseProvider,
+    });
+    assert.equal(secondRefresh.status, 'refreshed');
+    assert.equal(firstLifecycle.getActiveActivation('refresh-race-one').id, first.activation.id);
   } finally {
     firstLifecycle.close();
     secondLifecycle.close();
