@@ -125,7 +125,7 @@ test('SLA-07: a newer Project contribution marks other older active activations 
     }
 
     assert.equal(store.getRecord('staleness-record-two').activationId, second.activation.id);
-    assert.equal(store.getRecord('staleness-record-one').activationId, first.activation.id);
+    assert.equal(store.getRecord('staleness-record-one'), null); // blocked continuation must not create a Project record.
   } finally {
     firstLifecycle.close();
     secondLifecycle.close();
@@ -260,11 +260,17 @@ test('SLA-08: stale activation pauses its next continuation until an acknowledge
     const originalMarkers = firstLifecycle.listStalenessMarkers('refresh-session-one');
     assert.equal(originalMarkers.length, 1);
     assert.equal(originalMarkers[0].newerRecordId, newer.id);
-    const blocked = assert.throws(() => firstLifecycle.recordContribution({
-      id: 'refresh-blocked-record', sessionId: 'refresh-session-one',
-      category: 'ai_contribution', content: 'Must not continue before refresh.',
-      originType: 'ai',
-    }), /stale Project context must be refreshed/);
+    let blocked;
+    try {
+      firstLifecycle.recordContribution({
+        id: 'refresh-blocked-record', sessionId: 'refresh-session-one',
+        category: 'ai_contribution', content: 'Must not continue before refresh.',
+        originType: 'ai',
+      });
+      assert.fail('A stale activation must not accept a continuation');
+    } catch (error) {
+      blocked = error;
+    }
     assert.equal(blocked.code, 'STALE_CONTEXT_REFRESH_REQUIRED');
     assert.equal(blocked.stalenessMarkers[0].newerRecordId, newer.id);
     assert.throws(() => store.appendRecord({
@@ -464,7 +470,7 @@ test('SLA-08: unknown refresh remains unresolved and cannot be automatically rep
     assert.equal(unknown.status, 'blocked');
     assert.equal(unknown.reason, 'unknown');
     assert.equal(firstLifecycle.listRefreshAttempts('refresh-unknown-one')[0].outcome, 'unknown');
-    assert.throws(() => firstLifecycle.refreshStaleActivation({
+    await assert.rejects(() => firstLifecycle.refreshStaleActivation({
       sessionId: 'refresh-unknown-one', providerAdapter: provider,
     }), /unresolved; automatic retry is prohibited/);
     assert.equal(firstLifecycle.listRefreshAttempts('refresh-unknown-one').length, 1);
