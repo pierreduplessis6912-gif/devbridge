@@ -360,10 +360,30 @@ The dedicated test `SLA-11: a Cross-Project reference does not activate or discl
 This is evidence for data separation and lifecycle non-interference in the local SQLite test environment. It does **not** establish user/account-level authorization: direct Project lookup and handover APIs remain addressable by ID, and a trusted multi-user access-control boundary is still required. The six TODO entries are acceptance placeholders, not failed or skipped tests. This run does not establish production readiness or real-provider behaviour.
 
 
-### SLA-12 implementation status — awaiting local verification
+### SLA-12 implementation status — locally verified
 
 The branch now includes a terminal Session-ending transition. It appends one `session_ended` event and, when an activation is active, ends that activation in the same SQLite transaction. Session identity and provider metadata remain queryable; Project identity, records and history are not mutated. New activation, confirmation, handover, delivery-intent, checkpoint, refresh-intent and contribution-intent creation is blocked after Session ending.
 
 An already-reserved contribution may finish committing because its submission was accepted before the Session ended. An in-flight provider delivery or context refresh may append its eventual outcome after Session ending, but a late acknowledgement cannot create an activation or resume the Session. Unknown delivery outcomes remain Unknown and are not replayed. Repeating the Session-ending operation returns the existing end event rather than appending another.
 
 Dedicated tests cover Project/history preservation, terminal operation guards, late acknowledged and Unknown provider outcomes, prevention of late activation/replay, and completion of a pre-end reserved contribution. The user must run the full test suite locally before SLA-12 can be marked verified or closed.
+
+
+### SLA-12 Termux verification
+
+Verified locally by the user on Android/Termux with Node.js v26.3.1 after pulling commit `83667c6`:
+
+- Command: `npm test`
+- Tests: 46
+- Passed: 41
+- Failed: 0
+- Cancelled: 0
+- Skipped: 0
+- TODO placeholders: 5
+- Duration: 1859.592812 ms
+
+All four dedicated SLA-12 tests passed: Session ending preserves Project identity, records and activation history; a late provider acknowledgement cannot activate the Project; an already-reserved contribution may finish while new submissions are blocked; and an unresolved delivery remains Unknown without replay.
+
+The first run exposed an unsupported test fixture category (`note`); the fixture was corrected to use the supported `status` category in commit `83667c6`. The complete suite then passed with zero failures. The five TODO entries are remaining acceptance placeholders, not failed or skipped tests.
+
+This verifies the implemented SLA-12 scenarios in the local SQLite test environment. It does not establish real-provider behaviour, production authentication/authorization, multi-device synchronisation, backup/restore or production readiness. SLA-12 is locally verified and closed.
