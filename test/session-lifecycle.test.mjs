@@ -572,7 +572,7 @@ test.todo('SLA-07: a newer contribution marks another active activation potentia
 test.todo('SLA-09: concurrent contributions remain distinct and attributable');
 test.todo('SLA-10: concurrency and staleness do not become semantic conflict judgements');
 test.todo('SLA-11: cross-Project reference does not activate or disclose another Project');
-test.todo('SLA-12: ending a Session leaves Project identity and history intact');
+// SLA-12 executable coverage lives in session-ending.test.mjs.
 
 test('lifecycle refuses to open without a trusted confirmation authority', () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-no-authority-test-'));
