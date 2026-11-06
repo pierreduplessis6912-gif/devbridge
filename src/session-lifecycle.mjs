@@ -329,12 +329,6 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     CREATE TRIGGER IF NOT EXISTS session_end_blocks_checkpoints BEFORE INSERT ON outgoing_checkpoints
       WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
       BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
-    CREATE TRIGGER IF NOT EXISTS session_end_blocks_refresh_intents BEFORE INSERT ON activation_refresh_intents
-      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
-      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
-    CREATE TRIGGER IF NOT EXISTS session_end_blocks_contribution_intents BEFORE INSERT ON contribution_intents
-      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
-      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
     CREATE TRIGGER IF NOT EXISTS session_end_event_once BEFORE INSERT ON session_lifecycle_events
       WHEN NEW.event_type='session_ended' AND EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
       BEGIN SELECT RAISE(ABORT, 'Session may end only once'); END;
@@ -638,6 +632,17 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
             )
         )
       BEGIN SELECT RAISE(ABORT, 'stale Project context must be refreshed before continuation'); END;
+  `));
+
+  withTransaction(db, () => db.exec(`
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_refresh_intents
+      BEFORE INSERT ON activation_refresh_intents
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
+    CREATE TRIGGER IF NOT EXISTS session_end_blocks_contribution_intents
+      BEFORE INSERT ON contribution_intents
+      WHEN EXISTS (SELECT 1 FROM session_lifecycle_events e WHERE e.session_id=NEW.session_id AND e.event_type='session_ended')
+      BEGIN SELECT RAISE(ABORT, 'Session has ended'); END;
   `));
 
   let closed = false;
