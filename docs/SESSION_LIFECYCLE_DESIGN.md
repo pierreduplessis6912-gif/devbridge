@@ -324,6 +324,16 @@ The checkpoint row, activation_checkpointed event and activation_ended event are
 The boundary is a Project-history position, not a claim that every historical record was included in the outgoing handover or individually originated in that Session. Contribution-to-activation attribution remains a separate unimplemented capability. The event sequence is local to the current SQLite Project store; cross-device merge/synchronisation ordering remains open.
 
 The API currently requires the incoming activation request to be confirmed before checkpointing. It then ends the outgoing activation. Incoming delivery must not begin while an outgoing activation remains active, and a switch to a different Project requires the checkpoint to be linked to that incoming request.
+
+## 12B. Session ending boundary
+
+Session ending is a terminal transition for one DevBridge Session, not for any Project associated with it. The Session remains queryable with its original provider/model/conversation metadata. Its Project Activations, handovers, checkpoints, delivery history and attributed contributions remain historical records.
+
+If a Project Activation is active when the Session ends, the active activation is ended and a single `session_ended` lifecycle event is appended in the same transaction. The Project itself is not ended, locked, archived or modified. Returning to that Project requires a new DevBridge Session, explicit confirmation and a fresh handover.
+
+No new activation request, confirmation, handover, delivery intent, checkpoint, refresh intent or contribution reservation may be created after Session ending. A contribution reservation accepted before ending may finish committing; it is not a new continuation. A provider delivery or refresh already in flight may record its eventual outcome after ending, but a late acknowledgement cannot create an activation or resume the Session. Such post-end events are completion evidence for operations that began before ending, not permission for new work.
+
+Ending a Session does not resolve an Unknown delivery. Its intent and any recorded attempt remain unchanged; no automatic replay is initiated. Repeating the end operation returns the existing end event and does not append a second one.
 ## 13. Relationship to existing documents
 
 This design elaborates the session-continuity and handover requirements in [V1 Product Scope](V1_SCOPE.md) and uses the existing [Handover Contract](HANDOVER_CONTRACT.md).
@@ -364,9 +374,9 @@ The session lifecycle design is satisfied when tests can demonstrate:
 9. Concurrent contributions are both retained and their provenance/context versions are recorded.
 10. DevBridge flags concurrency and stale context but does not classify semantic conflicts or choose a winner.
 11. An explicit cross-project reference does not activate that project or silently transfer context.
-12. A session can end without affecting the persistent project identity or history.
+12. A Session can end without affecting Project identity or history; its active activation ends atomically, new work is blocked, and late outcomes of pre-existing provider operations cannot reactivate it.
 
 ---
 
-**Design status:** Initial activation, the injected test-only confirmation boundary, durable delivery intents, Unknown-outcome recovery and immutable outgoing checkpoints are implemented on build/v1-scope. Project events now have a per-Project sequence and checkpoints persist the exact history boundary, outgoing activation/handover references and Session lifecycle sequence. Production authentication, real provider integration, provider reconciliation, safe idempotent retry, contribution attribution, complete A → B → A behaviour, failed-switch recovery and stale-context handling remain open.  
+**Design status:** The branch now contains implementations for initial activation, the injected test-only confirmation boundary, durable delivery intents, Unknown-outcome handling, immutable outgoing checkpoints, contribution attribution, stale-context refresh, concurrent contribution reservation, semantic neutrality, Cross-Project reference isolation and Session ending. SLA-12 includes terminal Session state, preservation of Project history, guards against new operations, completion handling for pre-end work and protection against late activation. These recent lifecycle stages await the user's full local Termux test run before they can be marked verified. Production authentication, real provider integration, provider reconciliation, safe idempotent retry and multi-device synchronisation remain open.  
 **Core guarantee:** A project conversation may persist across switches, but project context is never assumed. It is confirmed, freshly delivered and acknowledged before DevBridge authorises continuation.
