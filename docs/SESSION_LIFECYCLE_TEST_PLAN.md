@@ -100,7 +100,7 @@ Test controls should allow the same scenario to produce different outcomes on su
 | SLT-08 | SLA-08 Deferred refresh | Ongoing work not interrupted at marker creation; next continuation pauses; acknowledged fresh delivery required |
 | SLT-09 | SLA-09 Concurrent contributions | Reserve both Session submissions at the same current Project boundary before either commit; commit in the order that makes the second activation stale; assert both records survive with distinct provenance, reciprocal staleness facts and later-continuation gates |
 | SLT-10 | SLA-10 No semantic judgement | Reserve differing statements from two current Sessions; commit both; assert exact content/provenance survives, staleness markers remain factual, and no automatic relationship/conflict event/table appears; after an acknowledged refresh, assert an explicit disagreement is a new attributed contribution with only its user-specified relationship |
-| SLT-11 | SLA-11 Cross-project reference | Reference creates no activation, handover delivery or inherited access |
+| SLT-11 | SLA-11 Cross-project reference | Create an append-only A → B reference while a Session is active on A; assert the reference stores only pointer metadata, A remains active, no B activation or delivery is created, A's handover contains no B records/content, and reference mutation/deletion is rejected. This is a data-isolation test, not proof of user-level authorization. |
 | SLT-12 | SLA-12 Session end | Session ends; Project, contributions and lifecycle history remain |
 
 ## 5. Additional integrity and fault-injection tests
@@ -283,3 +283,10 @@ Verified locally by the user on Android/Termux with Node.js v26.3.1 after pullin
 The dedicated test `SLA-10: differing concurrent contributions remain neutral until an attributed contribution records a relationship` passed. It verifies that differing concurrent statements remain separately preserved and attributed; staleness markers do not create semantic conflict judgements; no automatic relationship or conflict event/table is introduced; and a relationship such as `contradicts` is recorded only through a new attributed contribution explicitly supplied by the user.
 
 The six TODO entries are remaining acceptance placeholders, not failed or skipped tests. This run verifies the implemented SLA-10 scenario in the local SQLite test environment. It does not establish real-provider behaviour, production authentication, multi-process production concurrency or production readiness.
+
+
+### SLA-11 implementation status — awaiting local verification
+
+The branch now contains `src/cross-project-references.mjs` and a dedicated SLA-11 test. Cross-Project references are stored separately from within-Project record relationships, contain only source/target Project IDs plus an optional user-supplied label and timestamp, and are append-only. The reference API does not fetch target Project metadata or records, build a target handover, invoke a provider adapter, create an activation or change permissions. The test exercises a Session active on Project A, records an explicit reference to Project B, and checks that A remains active, no B activation/delivery appears, and A's handover contains no B record content.
+
+**Security limitation:** this is a data-separation boundary only. The current v1 store still exposes direct Project lookup and handover APIs by ID and does not yet implement user/account-level Project authorization. Therefore this test does not prove that an unauthorized caller cannot independently read Project B. A trusted authentication and authorization boundary must be designed and tested separately before multi-user or untrusted-client exposure.
