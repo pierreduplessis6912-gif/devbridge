@@ -324,3 +324,20 @@ Verified locally by the user on Android/Termux after pulling commit `83e07dc`:
 The dedicated test `SLA-11: a Cross-Project reference does not activate or disclose the referenced Project` passed. It verifies that recording an explicit A → B reference leaves A active, creates no B activation or provider delivery, and keeps B's record content out of A's handover. Reference metadata is append-only.
 
 **Scope limitation:** this is a data-separation and lifecycle test, not proof of user-level authorization. Direct Project lookup and handover APIs are still callable by Project ID; a trusted authentication and authorization boundary remains separate work. The test run used the repository's local SQLite test fixtures and does not establish production access control, provider integration or production readiness.
+
+### SLA-11 Termux verification
+
+Verified locally by the user on Android/Termux with Node.js v26.3.1 after pulling commit `83e07dc`:
+
+- Command: `npm test`
+- Tests: 43
+- Passed: 37
+- Failed: 0
+- Cancelled: 0
+- Skipped: 0
+- TODO placeholders: 6
+- Duration: 1747.068593 ms
+
+The dedicated test `SLA-11: a Cross-Project reference does not activate or disclose the referenced Project` passed. It verifies that creating an explicit reference from active Project A to Project B does not change the active Project, create a Project B activation or provider delivery, or include Project B record content in Project A's handover. It also checks reference metadata boundaries and append-only behaviour.
+
+This is evidence for data separation and lifecycle non-interference in the local SQLite test environment. It does **not** establish user/account-level authorization: direct Project lookup and handover APIs remain addressable by ID, and a trusted multi-user access-control boundary is still required. The six TODO entries are acceptance placeholders, not failed or skipped tests. This run does not establish production readiness or real-provider behaviour.
