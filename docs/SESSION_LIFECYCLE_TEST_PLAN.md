@@ -214,11 +214,11 @@ Assert that no partial active activation, orphan handover association, dangling 
 
 **Implemented, pending execution of the test suite:** initial activation, injected confirmation authority, append-only confirmation evidence, durable delivery intents, stable delivery identifiers, acknowledgement validation, fail-closed unknown handling, per-Project event sequencing and immutable outgoing checkpoint creation.
 
-This is not the complete Session Lifecycle. The checkpoint foundation is implemented, but complete A → B → A switching, failed-switch recovery, contribution attribution, stale-context refresh, session ending and several integrity scenarios remain unimplemented.
+This is not the complete Session Lifecycle. The checkpoint foundation and an A → B → A return-path acceptance test are implemented, with the return-path test pending execution in Termux. Failed-switch recovery, contribution attribution, stale-context refresh, session ending and several integrity scenarios remain unimplemented.
 
 ### Gate 3 — Recovery and hardening
 
-The branch now includes tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, v2-to-v3 Project event-sequence migration and the SLT-23 outgoing checkpoint boundary. These new checkpoint and migration tests still require execution in the user's Termux environment. The remaining SLT-13 through SLT-20 checks still require implementation and/or execution.
+The branch includes tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, v2-to-v3 Project event-sequence migration and the SLT-23 outgoing checkpoint boundary. The SLA-03 A → B → A return-path test has now been added and awaits execution in Termux. The remaining SLT-05 through SLT-20 scenarios still require implementation and/or execution.
 
 ### Gate 4 — Review
 
