@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { openStore } from '../src/store.mjs';
 
 function withStore(run) {
@@ -132,4 +133,98 @@ test('outbox insertion failure rolls back the local record, event, and device se
     content: 'The sequence should still begin at one', originType: 'user',
   });
   assert.equal(store.listSyncOutbox()[0].deviceProjectSequence, 1);
+}));
+
+
+test('incoming envelope receipt preserves exact bytes and records a SHA-256 digest without accepting content', () => withStore(({ store }) => {
+  const envelope = '  {"opaque":"ciphertext","version":1}\\n';
+  const result = store.receiveSyncEnvelope({
+    contributionId: 'remote-c1',
+    projectId: 'p1',
+    originDeviceId: 'remote-device',
+    deviceProjectSequence: 1,
+    envelope,
+    receivedAt: '2026-11-06T11:00:00.000Z',
+  });
+
+  assert.equal(result.state, 'received');
+  assert.equal(result.integrityConflict, false);
+  assert.equal(result.duplicate, false);
+  const receipt = store.getSyncInboxReceipt(result.receiptId);
+  assert.equal(receipt.envelope, envelope);
+  assert.equal(receipt.envelopeSha256, createHash('sha256').update(envelope, 'utf8').digest('hex'));
+  assert.equal(store.getProject('p1'), null);
+  assert.equal(store.listRecords('p1').length, 0);
+  assert.equal(store.getSyncAppliedContribution('remote-c1'), null);
+}));
+
+test('repeated exact incoming envelope is idempotent', () => withStore(({ store }) => {
+  const input = {
+    contributionId: 'remote-c1',
+    projectId: 'p1',
+    originDeviceId: 'remote-device',
+    deviceProjectSequence: 1,
+    envelope: '{"same":"bytes"}',
+    receivedAt: '2026-11-06T11:00:00.000Z',
+  };
+  const first = store.receiveSyncEnvelope(input);
+  const second = store.receiveSyncEnvelope({ ...input, receivedAt: '2026-11-06T11:01:00.000Z' });
+
+  assert.equal(second.receiptId, first.receiptId);
+  assert.equal(second.duplicate, true);
+  assert.equal(second.state, 'received');
+  assert.equal(store.listSyncInbox().length, 1);
+}));
+
+test('same contribution identity with different envelope bytes is quarantined', () => withStore(({ store }) => {
+  const identity = {
+    contributionId: 'remote-c1',
+    projectId: 'p1',
+    originDeviceId: 'remote-device',
+    deviceProjectSequence: 1,
+  };
+  const first = store.receiveSyncEnvelope({ ...identity, envelope: '{"value":1}' });
+  const conflict = store.receiveSyncEnvelope({ ...identity, envelope: '{"value":2}' });
+
+  assert.equal(conflict.integrityConflict, true);
+  assert.equal(conflict.state, 'quarantined');
+  assert.equal(conflict.lastErrorCode, 'contribution_identity_conflict');
+  assert.equal(store.listSyncInbox().length, 2);
+  assert.deepEqual(store.listSyncInbox().map((item) => item.state), ['quarantined', 'quarantined']);
+  assert.equal(store.getSyncInboxReceipt(first.receiptId).envelope, '{"value":1}');
+  assert.equal(store.getSyncInboxReceipt(conflict.receiptId).envelope, '{"value":2}');
+}));
+
+test('one origin Project sequence cannot be assigned to different contributions', () => withStore(({ store }) => {
+  const common = {
+    projectId: 'p1',
+    originDeviceId: 'remote-device',
+    deviceProjectSequence: 7,
+  };
+  const first = store.receiveSyncEnvelope({
+    ...common, contributionId: 'remote-c1', envelope: '{"value":1}',
+  });
+  const conflict = store.receiveSyncEnvelope({
+    ...common, contributionId: 'remote-c2', envelope: '{"value":2}',
+  });
+
+  assert.equal(conflict.integrityConflict, true);
+  assert.equal(conflict.lastErrorCode, 'origin_sequence_conflict');
+  assert.deepEqual(store.listSyncInbox().map((item) => item.state), ['quarantined', 'quarantined']);
+  assert.equal(store.getSyncInboxReceipt(first.receiptId).envelope, '{"value":1}');
+}));
+
+test('incoming envelope receipt validates routing metadata and non-empty exact envelope', () => withStore(({ store }) => {
+  const base = {
+    contributionId: 'remote-c1',
+    projectId: 'p1',
+    originDeviceId: 'remote-device',
+    deviceProjectSequence: 1,
+    envelope: '{"opaque":true}',
+  };
+  assert.throws(() => store.receiveSyncEnvelope({ ...base, envelope: '' }), /non-empty string/);
+  assert.throws(() => store.receiveSyncEnvelope({ ...base, deviceProjectSequence: 0 }), /positive safe integer/);
+  assert.throws(() => store.receiveSyncEnvelope({ ...base, contributionId: ' ' }), /non-empty string/);
+  assert.throws(() => store.listSyncInbox({ state: 'unknown' }), /state must be/);
+  assert.deepEqual(store.listSyncInbox(), []);
 }));
