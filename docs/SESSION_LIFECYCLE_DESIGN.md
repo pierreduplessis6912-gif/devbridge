@@ -307,6 +307,23 @@ No physical schema is prescribed here. The domain model will likely need concept
 
 A single immutable `session.project_id` is insufficient to represent a session that can switch A → B → A. A chronological activation/context-event relationship is the conceptual direction. The exact relational model, constraints and transaction boundaries remain to be designed and tested.
 
+## 12A. Implemented checkpoint boundary (v1 foundation)
+
+The current local SQLite implementation now gives every Project event a monotonically increasing, per-Project event_sequence. The v3 store migration backfills existing events in their original insertion order, then enforces the next sequence on every new event. Project events remain append-only.
+
+A checkpoint captures one consistent Project-history boundary using a single read statement:
+- Project event sequence and the identifier/timestamp of the event at that sequence.
+- Total Project record and event counts at that boundary.
+- The outgoing Project Activation and its original Handover Snapshot.
+- The incoming, separately confirmed activation request.
+- The last Session lifecycle-event sequence before checkpoint creation.
+- The checkpoint timestamp.
+
+The checkpoint row, activation_checkpointed event and activation_ended event are committed in one SQLite transaction. The checkpoint is append-only and remains available if delivery of the incoming Project later fails or becomes Unknown. New Project events receive a higher sequence and do not alter the checkpoint.
+
+The boundary is a Project-history position, not a claim that every historical record was included in the outgoing handover or individually originated in that Session. Contribution-to-activation attribution remains a separate unimplemented capability. The event sequence is local to the current SQLite Project store; cross-device merge/synchronisation ordering remains open.
+
+The API currently requires the incoming activation request to be confirmed before checkpointing. It then ends the outgoing activation. Incoming delivery must not begin while an outgoing activation remains active, and a switch to a different Project requires the checkpoint to be linked to that incoming request.
 ## 13. Relationship to existing documents
 
 This design elaborates the session-continuity and handover requirements in [V1 Product Scope](V1_SCOPE.md) and uses the existing [Handover Contract](HANDOVER_CONTRACT.md).
@@ -351,5 +368,5 @@ The session lifecycle design is satisfied when tests can demonstrate:
 
 ---
 
-**Design status:** The lifecycle core requires an injected confirmation authority, persists exact request/session/project confirmation evidence separately, and rejects caller-supplied confirmation claims. The only implemented authority is a test-only simulation; production authentication and trusted-interface wiring remain open. Delivery intents are now persisted before provider calls with stable IDs. Missing outcomes are reconstructed as Unknown after process restart, and automatic replay is blocked. Provider reconciliation and any explicitly safe idempotent retry remain unimplemented.  
+**Design status:** Initial activation, the injected test-only confirmation boundary, durable delivery intents, Unknown-outcome recovery and immutable outgoing checkpoints are implemented on build/v1-scope. Project events now have a per-Project sequence and checkpoints persist the exact history boundary, outgoing activation/handover references and Session lifecycle sequence. Production authentication, real provider integration, provider reconciliation, safe idempotent retry, contribution attribution, complete A → B → A behaviour, failed-switch recovery and stale-context handling remain open.  
 **Core guarantee:** A project conversation may persist across switches, but project context is never assumed. It is confirmed, freshly delivered and acknowledged before DevBridge authorises continuation.
