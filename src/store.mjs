@@ -66,7 +66,7 @@ export function openStore(databasePath) {
     db.exec('PRAGMA synchronous = FULL');
 
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 6) {
+    if (version > 7) {
       throw new Error(`Database schema version ${version} is newer than this application supports`);
     }
 
@@ -330,6 +330,89 @@ export function openStore(databasePath) {
             UNIQUE (project_id, origin_device_id, device_project_sequence)
           ) STRICT;
           PRAGMA user_version = 6;
+        `);
+      });
+    }
+
+    // Version 7 records event provenance, explicit Project adoption, and remote record ownership.
+    if (version < 7) {
+      withTransaction(db, () => {
+        db.exec(`
+          ALTER TABLE project_events ADD COLUMN origin_device_id TEXT;
+          ALTER TABLE project_events
+            ADD COLUMN origin_event_sequence INTEGER
+            CHECK (origin_event_sequence IS NULL OR origin_event_sequence > 0);
+          ALTER TABLE project_events
+            ADD COLUMN origin_contribution_id TEXT
+            REFERENCES sync_applied_contributions(contribution_id);
+
+          CREATE UNIQUE INDEX project_events_origin_identity
+            ON project_events(project_id, origin_device_id, origin_event_sequence)
+            WHERE origin_device_id IS NOT NULL
+              AND origin_event_sequence IS NOT NULL
+              AND origin_contribution_id IS NOT NULL;
+
+          CREATE TRIGGER project_events_origin_provenance_insert
+          BEFORE INSERT ON project_events
+          WHEN
+            (NEW.origin_device_id IS NULL AND (
+              NEW.origin_event_sequence IS NOT NULL OR NEW.origin_contribution_id IS NOT NULL
+            ))
+            OR
+            (NEW.origin_device_id IS NOT NULL AND (
+              NEW.origin_event_sequence IS NULL OR NEW.origin_contribution_id IS NULL
+            ))
+          BEGIN
+            SELECT RAISE(ABORT, 'event origin provenance must be complete');
+          END;
+
+          CREATE UNIQUE INDEX sync_inbox_project_receipt
+            ON sync_inbox(project_id, receipt_id);
+
+          CREATE TABLE sync_project_adoptions (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id),
+            adopted_at TEXT NOT NULL,
+            source_receipt_id TEXT NOT NULL,
+            FOREIGN KEY (project_id, source_receipt_id)
+              REFERENCES sync_inbox(project_id, receipt_id)
+          ) STRICT;
+
+          CREATE UNIQUE INDEX project_records_project_id_id
+            ON project_records(project_id, id);
+          CREATE UNIQUE INDEX sync_applied_contributions_project_id_id
+            ON sync_applied_contributions(project_id, contribution_id);
+
+          CREATE TABLE sync_applied_record_contributions (
+            record_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            contribution_id TEXT NOT NULL,
+            FOREIGN KEY (project_id, record_id)
+              REFERENCES project_records(project_id, id),
+            FOREIGN KEY (project_id, contribution_id)
+              REFERENCES sync_applied_contributions(project_id, contribution_id)
+          ) STRICT;
+
+          CREATE TRIGGER sync_applied_record_contributions_no_local_overlap
+          BEFORE INSERT ON sync_applied_record_contributions
+          WHEN EXISTS (
+            SELECT 1 FROM sync_record_contributions
+            WHERE record_id = NEW.record_id
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'record already belongs to a local sync contribution');
+          END;
+
+          CREATE TRIGGER sync_record_contributions_no_remote_overlap
+          BEFORE INSERT ON sync_record_contributions
+          WHEN EXISTS (
+            SELECT 1 FROM sync_applied_record_contributions
+            WHERE record_id = NEW.record_id
+          )
+          BEGIN
+            SELECT RAISE(ABORT, 'record already belongs to a remote sync contribution');
+          END;
+
+          PRAGMA user_version = 7;
         `);
       });
     }
@@ -878,7 +961,10 @@ export function openStore(databasePath) {
         SELECT id, project_id AS projectId, event_type AS eventType,
           actor_type AS actorType, actor_label AS actorLabel,
           record_id AS recordId, summary, occurred_at AS occurredAt,
-          event_sequence AS eventSequence
+          event_sequence AS eventSequence,
+          origin_device_id AS originDeviceId,
+          origin_event_sequence AS originEventSequence,
+          origin_contribution_id AS originContributionId
         FROM project_events
         WHERE project_id = ?
         ORDER BY occurred_at DESC, id DESC LIMIT ?
