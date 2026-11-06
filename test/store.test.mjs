@@ -138,6 +138,15 @@ test('database enforces same-project links and append-only relationship history'
     DROP TRIGGER record_links_no_update;
     DROP TRIGGER record_links_no_delete;
     DROP TRIGGER IF EXISTS project_events_sequence_insert;
+    DROP TRIGGER IF EXISTS project_events_origin_provenance_insert;
+    DROP TRIGGER IF EXISTS sync_applied_record_contributions_no_local_overlap;
+    DROP TRIGGER IF EXISTS sync_record_contributions_no_remote_overlap;
+    DROP INDEX IF EXISTS project_events_origin_identity;
+    DROP INDEX IF EXISTS sync_inbox_project_receipt;
+    DROP INDEX IF EXISTS project_records_project_id_id;
+    DROP INDEX IF EXISTS sync_applied_contributions_project_id_id;
+    DROP TABLE sync_project_adoptions;
+    DROP TABLE sync_applied_record_contributions;
     DROP INDEX IF EXISTS project_events_project_sequence;
     DROP INDEX IF EXISTS project_records_activation;
     DROP TABLE sync_applied_contributions;
@@ -151,6 +160,9 @@ test('database enforces same-project links and append-only relationship history'
     ALTER TABLE project_records DROP COLUMN handover_snapshot_id;
     ALTER TABLE project_records DROP COLUMN activation_id;
     ALTER TABLE project_records DROP COLUMN session_id;
+    ALTER TABLE project_events DROP COLUMN origin_contribution_id;
+    ALTER TABLE project_events DROP COLUMN origin_event_sequence;
+    ALTER TABLE project_events DROP COLUMN origin_device_id;
     ALTER TABLE project_events DROP COLUMN event_sequence;
     PRAGMA user_version = 1;
   `);
@@ -169,7 +181,113 @@ test('database enforces same-project links and append-only relationship history'
     `).run(), /same project/);
     assert.throws(() => db.prepare('UPDATE record_links SET relationship = ? WHERE id = ?').run('contradicts', linkId), /append-only/);
     assert.throws(() => db.prepare('DELETE FROM record_links WHERE id = ?').run(linkId), /append-only/);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 6);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 7);
+  } finally {
+    db.close();
+  }
+}));
+
+
+test('schema v7 preserves event provenance, explicit adoption references, and remote record ownership', () => withStore(({ store, databasePath }) => {
+  store.createProject({ id: 'p1', name: 'Origin project' });
+  store.createProject({ id: 'p2', name: 'Other project' });
+  store.appendRecord({
+    id: 'r1', projectId: 'p1', category: 'decision',
+    content: 'Origin record', originType: 'user',
+  });
+  store.appendRecord({
+    id: 'r2', projectId: 'p2', category: 'decision',
+    content: 'Other record', originType: 'user',
+  });
+
+  const db = new DatabaseSync(databasePath);
+  try {
+    db.exec('PRAGMA foreign_keys = ON');
+    db.prepare(`
+      INSERT INTO sync_inbox
+        (receipt_id, contribution_id, project_id, origin_device_id,
+         device_project_sequence, envelope, envelope_sha256, state, received_at)
+      VALUES ('receipt-p1', 'remote-c1', 'p1', 'remote-device', 1,
+        'opaque-envelope', 'digest-1', 'received', '2026-11-06T12:00:00.000Z')
+    `).run();
+    db.prepare(`
+      INSERT INTO sync_applied_contributions
+        (contribution_id, project_id, origin_device_id, device_project_sequence,
+         envelope_sha256, applied_at)
+      VALUES ('remote-c1', 'p1', 'remote-device', 1, 'digest-1', '2026-11-06T12:01:00.000Z')
+    `).run();
+    db.prepare(`
+      INSERT INTO sync_applied_contributions
+        (contribution_id, project_id, origin_device_id, device_project_sequence,
+         envelope_sha256, applied_at)
+      VALUES ('remote-c2', 'p2', 'remote-device', 1, 'digest-2', '2026-11-06T12:01:00.000Z')
+    `).run();
+
+    db.prepare(`
+      INSERT INTO project_events
+        (id, project_id, event_type, actor_type, record_id, summary, occurred_at,
+         event_sequence, origin_device_id, origin_event_sequence, origin_contribution_id)
+      VALUES ('remote-event-1', 'p1', 'record_added', 'user', 'r1',
+        'Imported event', '2026-11-06T12:02:00.000Z', 3,
+        'remote-device', 8, 'remote-c1')
+    `).run();
+
+    assert.throws(() => db.prepare(`
+      INSERT INTO project_events
+        (id, project_id, event_type, actor_type, summary, occurred_at,
+         event_sequence, origin_device_id, origin_event_sequence, origin_contribution_id)
+      VALUES ('remote-event-duplicate', 'p1', 'record_added', 'user',
+        'Duplicate origin event', '2026-11-06T12:03:00.000Z', 4,
+        'remote-device', 8, 'remote-c1')
+    `).run(), /UNIQUE constraint failed/);
+
+    assert.throws(() => db.prepare(`
+      INSERT INTO project_events
+        (id, project_id, event_type, actor_type, summary, occurred_at,
+         event_sequence, origin_device_id)
+      VALUES ('remote-event-incomplete', 'p1', 'record_added', 'user',
+        'Incomplete provenance', '2026-11-06T12:03:00.000Z', 4, 'remote-device')
+    `).run(), /event origin provenance must be complete/);
+
+    const event = store.listEvents('p1').find((item) => item.id === 'remote-event-1');
+    assert.equal(event.eventSequence, 3);
+    assert.equal(event.originDeviceId, 'remote-device');
+    assert.equal(event.originEventSequence, 8);
+    assert.equal(event.originContributionId, 'remote-c1');
+
+    db.prepare(`
+      INSERT INTO sync_project_adoptions (project_id, adopted_at, source_receipt_id)
+      VALUES ('p1', '2026-11-06T12:04:00.000Z', 'receipt-p1')
+    `).run();
+    assert.throws(() => db.prepare(`
+      INSERT INTO sync_project_adoptions (project_id, adopted_at, source_receipt_id)
+      VALUES ('p2', '2026-11-06T12:04:00.000Z', 'receipt-p1')
+    `).run(), /FOREIGN KEY constraint failed/);
+
+    db.prepare(`
+      INSERT INTO sync_applied_record_contributions (record_id, project_id, contribution_id)
+      VALUES ('r1', 'p1', 'remote-c1')
+    `).run();
+    assert.throws(() => db.prepare(`
+      INSERT INTO sync_applied_record_contributions (record_id, project_id, contribution_id)
+      VALUES ('r2', 'p1', 'remote-c1')
+    `).run(), /FOREIGN KEY constraint failed/);
+
+    db.prepare(`
+      INSERT INTO sync_contributions
+        (contribution_id, project_id, origin_device_id, device_project_sequence,
+         created_at, protocol_version, schema_version, payload_json, state)
+      VALUES ('local-c2', 'p2', 'local-device', 1, '2026-11-06T12:00:00.000Z',
+        1, 1, '{}', 'ready')
+    `).run();
+    db.prepare(`
+      INSERT INTO sync_record_contributions (record_id, contribution_id)
+      VALUES ('r2', 'local-c2')
+    `).run();
+    assert.throws(() => db.prepare(`
+      INSERT INTO sync_applied_record_contributions (record_id, project_id, contribution_id)
+      VALUES ('r2', 'p2', 'remote-c2')
+    `).run(), /record already belongs to a local sync contribution/);
   } finally {
     db.close();
   }
