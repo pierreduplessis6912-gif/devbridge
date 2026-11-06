@@ -140,6 +140,12 @@ test('database enforces same-project links and append-only relationship history'
     DROP TRIGGER IF EXISTS project_events_sequence_insert;
     DROP INDEX IF EXISTS project_events_project_sequence;
     DROP INDEX IF EXISTS project_records_activation;
+    DROP TABLE sync_record_contributions;
+    DROP TABLE sync_outbox;
+    DROP TABLE sync_contributions;
+    DROP TABLE sync_project_device_sequences;
+    DROP TABLE sync_project_enrolments;
+    DROP TABLE sync_local_device;
     ALTER TABLE project_records DROP COLUMN handover_snapshot_id;
     ALTER TABLE project_records DROP COLUMN activation_id;
     ALTER TABLE project_records DROP COLUMN session_id;
