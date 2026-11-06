@@ -139,6 +139,10 @@ test('database enforces same-project links and append-only relationship history'
     DROP TRIGGER record_links_no_delete;
     DROP TRIGGER IF EXISTS project_events_sequence_insert;
     DROP INDEX IF EXISTS project_events_project_sequence;
+    DROP INDEX IF EXISTS project_records_activation;
+    ALTER TABLE project_records DROP COLUMN handover_snapshot_id;
+    ALTER TABLE project_records DROP COLUMN activation_id;
+    ALTER TABLE project_records DROP COLUMN session_id;
     ALTER TABLE project_events DROP COLUMN event_sequence;
     PRAGMA user_version = 1;
   `);
@@ -157,7 +161,7 @@ test('database enforces same-project links and append-only relationship history'
     `).run(), /same project/);
     assert.throws(() => db.prepare('UPDATE record_links SET relationship = ? WHERE id = ?').run('contradicts', linkId), /append-only/);
     assert.throws(() => db.prepare('DELETE FROM record_links WHERE id = ?').run(linkId), /append-only/);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
   } finally {
     db.close();
   }
