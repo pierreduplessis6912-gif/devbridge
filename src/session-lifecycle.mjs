@@ -505,6 +505,56 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     CREATE TRIGGER IF NOT EXISTS activation_refresh_attempts_no_delete
       BEFORE DELETE ON activation_refresh_attempts
       BEGIN SELECT RAISE(ABORT, 'activation refresh attempts are append-only'); END;
+    CREATE TABLE IF NOT EXISTS contribution_intents (
+      id TEXT PRIMARY KEY,
+      record_id TEXT NOT NULL UNIQUE,
+      session_id TEXT NOT NULL REFERENCES sessions(id),
+      activation_id TEXT NOT NULL REFERENCES project_activations(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      handover_snapshot_id TEXT NOT NULL REFERENCES handover_snapshots(id),
+      project_event_sequence INTEGER NOT NULL CHECK (project_event_sequence >= 1),
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS contribution_intents_session
+      ON contribution_intents(session_id, project_event_sequence);
+    CREATE TRIGGER IF NOT EXISTS contribution_intents_scope_insert
+      BEFORE INSERT ON contribution_intents
+      WHEN NOT EXISTS (
+        SELECT 1 FROM project_activations a
+        JOIN handover_snapshots h ON h.id = a.handover_snapshot_id
+        WHERE a.id = NEW.activation_id
+          AND a.session_id = NEW.session_id
+          AND a.project_id = NEW.project_id
+          AND a.handover_snapshot_id = NEW.handover_snapshot_id
+          AND NEW.project_event_sequence >= h.project_event_sequence
+          AND NEW.project_event_sequence = (
+            SELECT COALESCE(MAX(event_sequence), 0)
+            FROM project_events WHERE project_id = NEW.project_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM session_lifecycle_events ended
+            WHERE ended.activation_id = a.id AND ended.event_type = 'activation_ended'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM activation_staleness_markers m
+            WHERE m.target_activation_id = a.id
+              AND m.newer_event_sequence > COALESCE((
+                SELECT MAX(i.project_event_sequence)
+                FROM activation_refresh_intents i
+                JOIN activation_refresh_attempts x
+                  ON x.refresh_intent_id = i.id AND x.outcome = 'acknowledged'
+                WHERE i.activation_id = a.id
+              ), m.target_handover_event_sequence)
+          )
+      )
+      BEGIN SELECT RAISE(ABORT, 'contribution intent must be reserved against the exact current activation and Project boundary'); END;
+    CREATE TRIGGER IF NOT EXISTS contribution_intents_no_update
+      BEFORE UPDATE ON contribution_intents
+      BEGIN SELECT RAISE(ABORT, 'contribution intents are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS contribution_intents_no_delete
+      BEFORE DELETE ON contribution_intents
+      BEGIN SELECT RAISE(ABORT, 'contribution intents are append-only'); END;
     CREATE TRIGGER IF NOT EXISTS project_records_block_stale_continuation
       BEFORE INSERT ON project_records
       WHEN NEW.activation_id IS NOT NULL
@@ -518,6 +568,26 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
                 ON a.refresh_intent_id = i.id AND a.outcome = 'acknowledged'
               WHERE i.activation_id = NEW.activation_id
             ), m.target_handover_event_sequence)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM contribution_intents ci
+          WHERE ci.record_id = NEW.id
+            AND ci.session_id = NEW.session_id
+            AND ci.activation_id = NEW.activation_id
+            AND ci.project_id = NEW.project_id
+            AND ci.handover_snapshot_id = NEW.handover_snapshot_id
+            AND NOT EXISTS (
+              SELECT 1 FROM activation_staleness_markers m
+              WHERE m.target_activation_id = NEW.activation_id
+                AND m.newer_event_sequence > COALESCE((
+                  SELECT MAX(i.project_event_sequence)
+                  FROM activation_refresh_intents i
+                  JOIN activation_refresh_attempts a
+                    ON a.refresh_intent_id = i.id AND a.outcome = 'acknowledged'
+                  WHERE i.activation_id = NEW.activation_id
+                ), m.target_handover_event_sequence)
+                AND m.newer_event_sequence <= ci.project_event_sequence
+            )
         )
       BEGIN SELECT RAISE(ABORT, 'stale Project context must be refreshed before continuation'); END;
   `));
@@ -1226,10 +1296,10 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       };
     },
 
-    recordContribution({
+    prepareContribution({
       sessionId, category, content, originType, originLabel = null,
       sourceRef = null, statusText = null, relatedRecords = [],
-      recordedAt = new Date().toISOString(), id,
+      recordedAt = new Date().toISOString(), id = randomUUID(),
     }) {
       ensureOpen();
       const session = requiredText(sessionId, 'sessionId');
@@ -1244,16 +1314,94 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         error.stalenessMarkers = staleMarkers;
         throw error;
       }
-
-      // The store's insert trigger revalidates this exact activation, handover,
-      // confirmation and acknowledged delivery inside the record transaction.
-      // That closes the race with a concurrent activation-ending checkpoint.
-      return continuityStore.appendRecord({
-        id, projectId: active.projectId, category, content, originType,
-        originLabel, sourceRef, statusText, relatedRecords, recordedAt,
+      const recordId = requiredText(id, 'id');
+      const timestamp = requiredText(recordedAt, 'recordedAt');
+      const payload = {
+        id: recordId, projectId: active.projectId, category, content, originType,
+        originLabel, sourceRef, statusText, relatedRecords, recordedAt: timestamp,
         sessionId: active.sessionId, activationId: active.id,
         handoverSnapshotId: active.handoverSnapshotId,
+      };
+      const intentId = randomUUID();
+      let projectEventSequence;
+      withTransaction(db, () => {
+        const stillActive = this.getActiveActivation(session);
+        if (!stillActive || stillActive.id !== active.id) {
+          throw new Error('Project Activation changed before contribution submission was reserved');
+        }
+        const boundary = db.prepare(
+          'SELECT COALESCE(MAX(event_sequence), 0) AS sequence FROM project_events WHERE project_id = ?',
+        ).get(active.projectId);
+        projectEventSequence = boundary.sequence;
+        const stillStale = this.listUnaddressedStalenessMarkers(session);
+        if (stillStale.length) {
+          const error = new Error('stale Project context must be refreshed before continuation');
+          error.code = 'STALE_CONTEXT_REFRESH_REQUIRED';
+          error.stalenessMarkers = stillStale;
+          throw error;
+        }
+        db.prepare(`
+          INSERT INTO contribution_intents
+            (id, record_id, session_id, activation_id, project_id,
+             handover_snapshot_id, project_event_sequence, payload_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          intentId, recordId, active.sessionId, active.id, active.projectId,
+          active.handoverSnapshotId, projectEventSequence, JSON.stringify(payload), timestamp,
+        );
+        appendEvent({
+          sessionId: active.sessionId, eventType: 'contribution_submitted',
+          projectId: active.projectId, activationId: active.id,
+          handoverSnapshotId: active.handoverSnapshotId,
+          summary: 'Contribution submission reserved at Project event sequence ' + projectEventSequence,
+          occurredAt: timestamp,
+        });
       });
+      return { intentId, recordId, sessionId: active.sessionId,
+        activationId: active.id, projectId: active.projectId, projectEventSequence };
+    },
+
+    listContributionIntents(sessionId) {
+      ensureOpen();
+      return db.prepare(`
+        SELECT i.id AS intentId, i.record_id AS recordId,
+          i.session_id AS sessionId, i.activation_id AS activationId,
+          i.project_id AS projectId, i.handover_snapshot_id AS handoverSnapshotId,
+          i.project_event_sequence AS projectEventSequence, i.created_at AS createdAt,
+          CASE WHEN r.id IS NULL THEN 'pending' ELSE 'committed' END AS status
+        FROM contribution_intents i
+        LEFT JOIN project_records r ON r.id = i.record_id
+        WHERE i.session_id = ? ORDER BY i.rowid
+      `).all(requiredText(sessionId, 'sessionId'));
+    },
+
+    commitContribution({ intentId }) {
+      ensureOpen();
+      const intent = db.prepare(`
+        SELECT id, record_id AS recordId, payload_json AS payloadJson
+        FROM contribution_intents WHERE id = ?
+      `).get(requiredText(intentId, 'intentId'));
+      if (!intent) throw new Error('Contribution intent not found');
+      const existing = continuityStore.getRecord(intent.recordId);
+      if (existing) return existing;
+      const payload = JSON.parse(intent.payloadJson);
+      // The immutable reservation allows this already-submitted contribution
+      // to finish if another Session makes its activation stale in the meantime.
+      // The store/lifecycle triggers still require the exact active activation,
+      // handover, confirmation, delivery and matching pre-staleness intent.
+      return continuityStore.appendRecord(payload);
+    },
+
+    recordContribution({
+      sessionId, category, content, originType, originLabel = null,
+      sourceRef = null, statusText = null, relatedRecords = [],
+      recordedAt = new Date().toISOString(), id,
+    }) {
+      const prepared = this.prepareContribution({
+        sessionId, category, content, originType, originLabel, sourceRef,
+        statusText, relatedRecords, recordedAt, id,
+      });
+      return this.commitContribution({ intentId: prepared.intentId });
     },
 
     close() {
