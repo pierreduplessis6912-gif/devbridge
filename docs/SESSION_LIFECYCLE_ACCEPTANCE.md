@@ -266,17 +266,28 @@ Every acceptance scenario must preserve these rules:
 ### SLA-12 — Ending a Session leaves Project identity and history intact
 
 **Given**
-- Session S has one or more Project Activations and recorded contributions.
-- Its Project has persistent history.
+- Session S may have an active Project Activation, a pending activation request, an in-flight provider operation, or previously reserved contributions.
+- Its Project has persistent identity and append-only history.
 
 **When**
-- S is ended.
+- S is ended through the Session lifecycle.
 
 **Then**
-- S is marked ended through a traceable lifecycle event/state.
-- Its activations, handovers, checkpoints, delivery attempts and contributions remain historically available.
-- The Project remains independently accessible in the Project catalogue.
-- No Project history is deleted or rewritten because the Session ended.
+- One append-only `session_ended` event records the terminal Session transition.
+- If S has an active Project Activation, that activation is ended in the same atomic transaction; it is not silently reactivated.
+- Session identity and descriptive provider/model/conversation metadata remain queryable, with Session status derived as ended.
+- Project identity, records, relationships, events and history boundaries remain unchanged by Session ending.
+- Activations, handovers, checkpoints, delivery intents/attempts, refresh history and contribution provenance remain historically queryable.
+- A contribution already reserved before Session ending may finish committing; no new contribution reservation may begin after ending.
+- A provider operation already in flight may record its eventual acknowledgement, failure or unknown outcome after Session ending. A late acknowledgement must not create a Project Activation.
+- An unresolved delivery remains unresolved/Unknown; Session ending does not convert it to failure or success and does not trigger a retry.
+- Repeating the end operation is idempotent and does not append another `session_ended` event.
+
+**And**
+- No new activation request, confirmation, handover, delivery intent, checkpoint, refresh intent, contribution intent or Project Activation may be created for S after it ends.
+- New Session continuation, refresh and activation operations are rejected.
+- A return to the same Project requires a new DevBridge Session and its own explicit confirmation and fresh handover.
+- Ending S does not end, archive, lock or otherwise change the Project itself..
 
 ## 5. Cross-scenario failure and integrity requirements
 
