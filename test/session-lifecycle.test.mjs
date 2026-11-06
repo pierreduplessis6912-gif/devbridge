@@ -165,7 +165,7 @@ test('SLA-02: switching A to B checkpoints A and activates B only after delivery
 
     lifecycle.requestProjectActivation({
       sessionId: 'session-switch', projectId: 'switch-project-a',
-      requestId: 'request-switch-a',
+      requestId: 'request-switch-a', requestedAt: '2026-11-06T10:00:00.000Z',
     });
     await confirm('request-switch-a', 'switch-project-a');
     const firstA = await lifecycle.activateProject({
@@ -177,7 +177,7 @@ test('SLA-02: switching A to B checkpoints A and activates B only after delivery
 
     lifecycle.requestProjectActivation({
       sessionId: 'session-switch', projectId: 'switch-project-b',
-      requestId: 'request-switch-b',
+      requestId: 'request-switch-b', requestedAt: '2026-11-06T10:01:00.000Z',
     });
     await confirm('request-switch-b', 'switch-project-b');
     const checkpoint = lifecycle.checkpointActiveActivation({
