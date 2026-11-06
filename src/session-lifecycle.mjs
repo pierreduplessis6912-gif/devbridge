@@ -395,6 +395,29 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           );
       END;
 
+    CREATE TRIGGER IF NOT EXISTS activation_insert_detects_prior_staleness
+      AFTER INSERT ON project_activations
+      BEGIN
+        INSERT OR IGNORE INTO activation_staleness_markers (
+          id, project_id, target_session_id, target_activation_id,
+          target_handover_snapshot_id, target_handover_event_sequence,
+          newer_event_sequence, newer_event_id, newer_record_id,
+          source_session_id, source_activation_id, marked_at
+        )
+        SELECT lower(hex(randomblob(16))), NEW.project_id, NEW.session_id, NEW.id,
+          NEW.handover_snapshot_id, h.project_event_sequence,
+          p.event_sequence, p.id, p.record_id,
+          source.session_id, source.activation_id, p.occurred_at
+        FROM handover_snapshots h
+        JOIN project_events p
+          ON p.project_id = NEW.project_id
+          AND p.event_sequence > h.project_event_sequence
+          AND p.event_type = 'record_added'
+          AND p.record_id IS NOT NULL
+        JOIN project_records source ON source.id = p.record_id
+        WHERE h.id = NEW.handover_snapshot_id;
+      END;
+
     CREATE TRIGGER IF NOT EXISTS activation_staleness_markers_no_update
       BEFORE UPDATE ON activation_staleness_markers
       BEGIN SELECT RAISE(ABORT, 'activation staleness markers are append-only'); END;
