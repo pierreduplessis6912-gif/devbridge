@@ -457,7 +457,8 @@ export function openStore(databasePath) {
       return db.prepare(`
         SELECT id, project_id AS projectId, event_type AS eventType,
           actor_type AS actorType, actor_label AS actorLabel,
-          record_id AS recordId, summary, occurred_at AS occurredAt
+          record_id AS recordId, summary, occurred_at AS occurredAt,
+          event_sequence AS eventSequence
         FROM project_events
         WHERE project_id = ?
         ORDER BY occurred_at DESC, id DESC LIMIT ?
@@ -470,6 +471,10 @@ export function openStore(databasePath) {
       if (!project) throw new Error(`Project not found: ${projectId}`);
       const limit = positiveInteger(recordLimit, 'recordLimit');
       const eventCountLimit = positiveInteger(eventLimit, 'eventLimit');
+      // Hold one SQLite read snapshot so the records, events and exact boundary
+      // all describe the same Project history position.
+      db.exec('BEGIN');
+      try {
       const recordCountKnown = db.prepare(
         'SELECT COUNT(*) AS count FROM project_records WHERE project_id = ?',
       ).get(project.id).count;
@@ -519,7 +524,7 @@ export function openStore(databasePath) {
           .map((link) => link.toRecordId),
       )];
 
-      return {
+      const handover = {
         format: 'devbridge-handover-v2',
         generatedAt: new Date().toISOString(),
         project,
@@ -553,9 +558,16 @@ export function openStore(databasePath) {
         recordCountKnown,
         hasOlderRecords: recordCountKnown > records.length,
         lastRecordedActivityAt: lastEvent?.occurredAt ?? null,
+        historyBoundary: this.getProjectHistoryBoundary(project.id),
         completeness: 'recorded_context_only',
         notice: 'This handover contains information recorded by DevBridge only. It may omit private conversations, disconnected sources, or activity never submitted or observed. Current-state indexes cover included records only; status reports are not independently verified.',
       };
+      db.exec('COMMIT');
+      return handover;
+      } catch (error) {
+        try { db.exec('ROLLBACK'); } catch {}
+        throw error;
+      }
     },
 
     close() {
