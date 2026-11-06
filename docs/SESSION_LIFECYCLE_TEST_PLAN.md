@@ -101,7 +101,7 @@ Test controls should allow the same scenario to produce different outcomes on su
 | SLT-09 | SLA-09 Concurrent contributions | Reserve both Session submissions at the same current Project boundary before either commit; commit in the order that makes the second activation stale; assert both records survive with distinct provenance, reciprocal staleness facts and later-continuation gates |
 | SLT-10 | SLA-10 No semantic judgement | Reserve differing statements from two current Sessions; commit both; assert exact content/provenance survives, staleness markers remain factual, and no automatic relationship/conflict event/table appears; after an acknowledged refresh, assert an explicit disagreement is a new attributed contribution with only its user-specified relationship |
 | SLT-11 | SLA-11 Cross-project reference | Create an append-only A → B reference while a Session is active on A; assert the reference stores only pointer metadata, A remains active, no B activation or delivery is created, A's handover contains no B records/content, and reference mutation/deletion is rejected. This is a data-isolation test, not proof of user-level authorization. |
-| SLT-12 | SLA-12 Session end | Session ends; Project, contributions and lifecycle history remain |
+| SLT-12 | SLA-12 Session end | End active activation atomically; preserve Session/Project identity and all history; reject new operations; preserve pre-end reserved submissions; record late provider outcomes without late activation; retain Unknown without replay; end idempotently |
 
 ## 5. Additional integrity and fault-injection tests
 
@@ -358,3 +358,12 @@ Verified locally by the user on Android/Termux with Node.js v26.3.1 after pullin
 The dedicated test `SLA-11: a Cross-Project reference does not activate or disclose the referenced Project` passed. It verifies that creating an explicit reference from active Project A to Project B does not change the active Project, create a Project B activation or provider delivery, or include Project B record content in Project A's handover. It also checks reference metadata boundaries and append-only behaviour.
 
 This is evidence for data separation and lifecycle non-interference in the local SQLite test environment. It does **not** establish user/account-level authorization: direct Project lookup and handover APIs remain addressable by ID, and a trusted multi-user access-control boundary is still required. The six TODO entries are acceptance placeholders, not failed or skipped tests. This run does not establish production readiness or real-provider behaviour.
+
+
+### SLA-12 implementation status — awaiting local verification
+
+The branch now includes a terminal Session-ending transition. It appends one `session_ended` event and, when an activation is active, ends that activation in the same SQLite transaction. Session identity and provider metadata remain queryable; Project identity, records and history are not mutated. New activation, confirmation, handover, delivery-intent, checkpoint, refresh-intent and contribution-intent creation is blocked after Session ending.
+
+An already-reserved contribution may finish committing because its submission was accepted before the Session ended. An in-flight provider delivery or context refresh may append its eventual outcome after Session ending, but a late acknowledgement cannot create an activation or resume the Session. Unknown delivery outcomes remain Unknown and are not replayed. Repeating the Session-ending operation returns the existing end event rather than appending another.
+
+Dedicated tests cover Project/history preservation, terminal operation guards, a late provider acknowledgement, and completion of a pre-end reserved contribution. The user must run the full test suite locally before SLA-12 can be marked verified or closed.
