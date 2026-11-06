@@ -114,9 +114,9 @@ test('simulated provider rejects malformed delivery requests', async () => {
   );
 });
 
-// Scenarios without implementation/coverage remain explicit TODOs. Current
-// executable coverage includes initial activation, A-to-B switching, A-to-B-to-A
-// return, failed-switch recovery, confirmation trust and checkpoint foundations.
+// The main lifecycle scenarios below complement dedicated acceptance tests
+// for contribution attribution, staleness/refresh, concurrent contributions,
+// semantic neutrality, Cross-Project references and Session ending.
 test('SLA-02: switching A to B checkpoints A and activates B only after delivery', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-switch-project-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
@@ -567,12 +567,9 @@ test('SLA-05: failed switch preserves the checkpoint and recovery creates a fres
     rmSync(directory, { recursive: true, force: true });
   }
 });
-test.todo('SLA-06: contributions use the active Project Activation');
-test.todo('SLA-07: a newer contribution marks another active activation potentially stale');
-test.todo('SLA-09: concurrent contributions remain distinct and attributable');
-test.todo('SLA-10: concurrency and staleness do not become semantic conflict judgements');
-test.todo('SLA-11: cross-Project reference does not activate or disclose another Project');
-// SLA-12 executable coverage lives in session-ending.test.mjs.
+// SLA-06 through SLA-12 have dedicated executable acceptance tests in
+// contribution-attribution, staleness-detection, concurrent-contributions,
+// semantic-neutrality, cross-project-reference and session-ending test files.
 
 test('lifecycle refuses to open without a trusted confirmation authority', () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-no-authority-test-'));
