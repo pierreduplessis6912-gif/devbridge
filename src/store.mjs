@@ -66,7 +66,7 @@ export function openStore(databasePath) {
     db.exec('PRAGMA synchronous = FULL');
 
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 2) {
+    if (version > 3) {
       throw new Error(`Database schema version ${version} is newer than this application supports`);
     }
 
@@ -189,6 +189,46 @@ export function openStore(databasePath) {
         `);
       });
     }
+
+    // Version 3 adds a durable, per-project event sequence for checkpoint boundaries.
+    if (version < 3) {
+      withTransaction(db, () => {
+        db.exec(`
+          DROP TRIGGER IF EXISTS project_events_no_update;
+          ALTER TABLE project_events
+            ADD COLUMN event_sequence INTEGER NOT NULL DEFAULT 0;
+
+          UPDATE project_events AS target
+          SET event_sequence = (
+            SELECT COUNT(*)
+            FROM project_events AS prior
+            WHERE prior.project_id = target.project_id
+              AND prior.rowid <= target.rowid
+          );
+
+          CREATE UNIQUE INDEX project_events_project_sequence
+            ON project_events(project_id, event_sequence);
+
+          CREATE TRIGGER project_events_sequence_insert
+          BEFORE INSERT ON project_events
+          WHEN NEW.event_sequence <> COALESCE((
+            SELECT MAX(event_sequence) + 1
+            FROM project_events WHERE project_id = NEW.project_id
+          ), 1)
+          BEGIN
+            SELECT RAISE(ABORT, 'project event sequence must be the next project sequence');
+          END;
+
+          CREATE TRIGGER project_events_no_update
+          BEFORE UPDATE ON project_events
+          BEGIN
+            SELECT RAISE(ABORT, 'project events are append-only');
+          END;
+
+          PRAGMA user_version = 3;
+        `);
+      });
+    }
   } catch (error) {
     db.close();
     throw error;
@@ -215,8 +255,8 @@ export function openStore(databasePath) {
 
         db.prepare(`
           INSERT INTO project_events
-            (id, project_id, event_type, actor_type, actor_label, record_id, summary, occurred_at)
-          VALUES (?, ?, 'project_created', 'user', NULL, NULL, ?, ?)
+            (id, project_id, event_type, actor_type, actor_label, record_id, summary, occurred_at, event_sequence)
+          VALUES (?, ?, 'project_created', 'user', NULL, NULL, ?, ?, 1)
         `).run(randomUUID(), projectId, `Project created: ${projectName}`, now);
       });
 
@@ -308,14 +348,36 @@ export function openStore(databasePath) {
         }
 
         db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(timestamp, project);
+        const eventSequence = db.prepare(
+          'SELECT COALESCE(MAX(event_sequence), 0) + 1 AS sequence FROM project_events WHERE project_id = ?',
+        ).get(project).sequence;
         db.prepare(`
           INSERT INTO project_events
-            (id, project_id, event_type, actor_type, actor_label, record_id, summary, occurred_at)
-          VALUES (?, ?, 'record_added', ?, ?, ?, ?, ?)
-        `).run(randomUUID(), project, originType, label, recordId, `Recorded ${recordCategory}`, timestamp);
+            (id, project_id, event_type, actor_type, actor_label, record_id, summary, occurred_at, event_sequence)
+          VALUES (?, ?, 'record_added', ?, ?, ?, ?, ?, ?)
+        `).run(randomUUID(), project, originType, label, recordId, `Recorded ${recordCategory}`, timestamp, eventSequence);
       });
 
       return this.getRecord(recordId);
+    },
+
+    getProjectHistoryBoundary(projectId) {
+      ensureOpen();
+      const project = requiredText(projectId, 'projectId');
+      const boundary = db.prepare(`
+        SELECT p.id AS projectId,
+          (SELECT COUNT(*) FROM project_records r WHERE r.project_id = p.id) AS recordCount,
+          (SELECT COUNT(*) FROM project_events e WHERE e.project_id = p.id) AS eventCount,
+          (SELECT COALESCE(MAX(e.event_sequence), 0)
+            FROM project_events e WHERE e.project_id = p.id) AS eventSequence,
+          (SELECT e.id FROM project_events e
+            WHERE e.project_id = p.id ORDER BY e.event_sequence DESC LIMIT 1) AS lastEventId,
+          (SELECT e.occurred_at FROM project_events e
+            WHERE e.project_id = p.id ORDER BY e.event_sequence DESC LIMIT 1) AS lastEventAt
+        FROM projects p WHERE p.id = ?
+      `).get(project);
+      if (!boundary) throw new Error(`Project not found: ${project}`);
+      return { ...boundary, capturedAt: new Date().toISOString() };
     },
 
     getRecord(recordId) {
