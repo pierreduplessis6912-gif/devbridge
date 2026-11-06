@@ -706,7 +706,7 @@ export function openStore(databasePath) {
 
         const identityConflict = sameId.length > 0 || Boolean(appliedById);
         const sequenceConflict = sameSequenceInbox.length > 0
-          || (appliedBySequence && appliedBySequence.contributionId !== id);
+          || Boolean(appliedBySequence && appliedBySequence.contributionId !== id);
         const integrityConflict = identityConflict || sequenceConflict;
         const errorCode = identityConflict
           ? 'contribution_identity_conflict'
