@@ -161,7 +161,7 @@ test('database enforces same-project links and append-only relationship history'
     `).run(), /same project/);
     assert.throws(() => db.prepare('UPDATE record_links SET relationship = ? WHERE id = ?').run('contradicts', linkId), /append-only/);
     assert.throws(() => db.prepare('DELETE FROM record_links WHERE id = ?').run(linkId), /append-only/);
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 4);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 5);
   } finally {
     db.close();
   }
