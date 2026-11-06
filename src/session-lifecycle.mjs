@@ -110,6 +110,22 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       activated_at TEXT NOT NULL
     ) STRICT;
 
+    CREATE TABLE IF NOT EXISTS outgoing_checkpoints (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      outgoing_activation_id TEXT NOT NULL UNIQUE REFERENCES project_activations(id),
+      incoming_activation_request_id TEXT NOT NULL UNIQUE REFERENCES activation_requests(id),
+      handover_snapshot_id TEXT NOT NULL REFERENCES handover_snapshots(id),
+      project_event_sequence INTEGER NOT NULL CHECK (project_event_sequence > 0),
+      project_event_id TEXT NOT NULL REFERENCES project_events(id),
+      project_event_at TEXT NOT NULL,
+      project_record_count INTEGER NOT NULL CHECK (project_record_count >= 0),
+      project_event_count INTEGER NOT NULL CHECK (project_event_count > 0),
+      lifecycle_event_sequence INTEGER NOT NULL CHECK (lifecycle_event_sequence > 0),
+      checkpointed_at TEXT NOT NULL
+    ) STRICT;
+
     CREATE TABLE IF NOT EXISTS session_lifecycle_events (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -120,6 +136,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       activation_id TEXT REFERENCES project_activations(id),
       handover_snapshot_id TEXT REFERENCES handover_snapshots(id),
       delivery_attempt_id TEXT REFERENCES context_delivery_attempts(id),
+      checkpoint_id TEXT REFERENCES outgoing_checkpoints(id),
       summary TEXT NOT NULL,
       occurred_at TEXT NOT NULL,
       UNIQUE(session_id, sequence)
@@ -131,6 +148,31 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       ON project_activations(session_id, activated_at, id);
     CREATE INDEX IF NOT EXISTS session_events_order
       ON session_lifecycle_events(session_id, sequence);
+    CREATE INDEX IF NOT EXISTS outgoing_checkpoints_session
+      ON outgoing_checkpoints(session_id, checkpointed_at, id);
+
+    CREATE TRIGGER IF NOT EXISTS outgoing_checkpoints_scope_insert
+      BEFORE INSERT ON outgoing_checkpoints
+      WHEN NOT EXISTS (
+        SELECT 1 FROM project_activations a
+        JOIN activation_requests r ON r.id = NEW.incoming_activation_request_id
+        WHERE a.id = NEW.outgoing_activation_id
+          AND a.session_id = NEW.session_id
+          AND a.project_id = NEW.project_id
+          AND a.handover_snapshot_id = NEW.handover_snapshot_id
+          AND r.session_id = NEW.session_id
+          AND r.project_id <> NEW.project_id
+          AND NOT EXISTS (
+            SELECT 1 FROM session_lifecycle_events e
+            WHERE e.activation_id = a.id AND e.event_type = 'activation_ended'
+          )
+      )
+      BEGIN SELECT RAISE(ABORT, 'checkpoint must match an active outgoing activation and a different confirmed target request'); END;
+
+    CREATE TRIGGER IF NOT EXISTS outgoing_checkpoints_no_update BEFORE UPDATE ON outgoing_checkpoints
+      BEGIN SELECT RAISE(ABORT, 'outgoing checkpoints are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS outgoing_checkpoints_no_delete BEFORE DELETE ON outgoing_checkpoints
+      BEGIN SELECT RAISE(ABORT, 'outgoing checkpoints are append-only'); END;
 
     CREATE TRIGGER IF NOT EXISTS activation_confirmations_scope_insert
       BEFORE INSERT ON activation_confirmations
@@ -216,6 +258,13 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       BEGIN SELECT RAISE(ABORT, 'session lifecycle events are append-only'); END;
   `));
 
+  // Existing databases may have the lifecycle event table from the earlier
+  // additive schema. Add the checkpoint reference without rebuilding history.
+  const lifecycleEventColumns = db.prepare('PRAGMA table_info(session_lifecycle_events)').all();
+  if (!lifecycleEventColumns.some((column) => column.name === 'checkpoint_id')) {
+    db.exec('ALTER TABLE session_lifecycle_events ADD COLUMN checkpoint_id TEXT REFERENCES outgoing_checkpoints(id)');
+  }
+
   let closed = false;
   const ensureOpen = () => { if (closed) throw new Error('Session lifecycle store is closed'); };
 
@@ -226,13 +275,14 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     db.prepare(`
       INSERT INTO session_lifecycle_events
         (id, session_id, sequence, event_type, project_id, activation_request_id,
-         activation_id, handover_snapshot_id, delivery_attempt_id, summary, occurred_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         activation_id, handover_snapshot_id, delivery_attempt_id, checkpoint_id, summary, occurred_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(), event.sessionId, sequence, event.eventType,
       event.projectId ?? null, event.activationRequestId ?? null,
       event.activationId ?? null, event.handoverSnapshotId ?? null,
-      event.deliveryAttemptId ?? null, event.summary, event.occurredAt,
+      event.deliveryAttemptId ?? null, event.checkpointId ?? null,
+      event.summary, event.occurredAt,
     );
   }
 
@@ -270,7 +320,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         SELECT id, session_id AS sessionId, sequence, event_type AS eventType,
           project_id AS projectId, activation_request_id AS activationRequestId,
           activation_id AS activationId, handover_snapshot_id AS handoverSnapshotId,
-          delivery_attempt_id AS deliveryAttemptId, summary, occurred_at AS occurredAt
+          delivery_attempt_id AS deliveryAttemptId, checkpoint_id AS checkpointId,
+          summary, occurred_at AS occurredAt
         FROM session_lifecycle_events WHERE session_id = ? ORDER BY sequence
       `).all(requiredText(sessionId, 'sessionId'));
     },
@@ -336,7 +387,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
 
       withTransaction(db, () => {
         const active = db.prepare(`
-          SELECT 1 FROM project_activations a
+          SELECT a.project_id AS projectId FROM project_activations a
           WHERE a.session_id = ?
             AND NOT EXISTS (
               SELECT 1 FROM session_lifecycle_events e
@@ -344,8 +395,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
             )
           LIMIT 1
         `).get(session);
-        if (active) {
-          throw new Error('Session already has an active Project Activation; switching is not yet supported');
+        if (active?.projectId === project) {
+          throw new Error('Project is already the active Project Activation');
         }
         const pending = db.prepare(`
           SELECT 1 FROM activation_requests r
@@ -376,6 +427,114 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         });
       });
       return { id: request, sessionId: session, projectId: project, requestedAt: timestamp };
+    },
+
+    listCheckpoints(sessionId) {
+      ensureOpen();
+      return db.prepare(`
+        SELECT id, session_id AS sessionId, project_id AS projectId,
+          outgoing_activation_id AS outgoingActivationId,
+          incoming_activation_request_id AS incomingActivationRequestId,
+          handover_snapshot_id AS handoverSnapshotId,
+          project_event_sequence AS projectEventSequence,
+          project_event_id AS projectEventId,
+          project_event_at AS projectEventAt,
+          project_record_count AS projectRecordCount,
+          project_event_count AS projectEventCount,
+          lifecycle_event_sequence AS lifecycleEventSequence,
+          checkpointed_at AS checkpointedAt
+        FROM outgoing_checkpoints
+        WHERE session_id = ? ORDER BY rowid
+      `).all(requiredText(sessionId, 'sessionId'));
+    },
+
+    checkpointActiveActivation({ requestId, checkpointedAt = null }) {
+      ensureOpen();
+      const request = requiredText(requestId, 'requestId');
+      const incoming = db.prepare(`
+        SELECT r.id, r.session_id AS sessionId, r.project_id AS projectId
+        FROM activation_requests r
+        JOIN activation_confirmations c ON c.activation_request_id = r.id
+        WHERE r.id = ?
+      `).get(request);
+      if (!incoming) throw new Error('Checkpoint requires a confirmed incoming activation request');
+
+      const outgoing = this.getActiveActivation(incoming.sessionId);
+      if (!outgoing) throw new Error('Session has no active outgoing Project Activation to checkpoint');
+      if (outgoing.projectId === incoming.projectId) {
+        throw new Error('Cannot checkpoint an activation when the requested Project is already active');
+      }
+
+      const boundary = continuityStore.getProjectHistoryBoundary(outgoing.projectId);
+      if (!boundary || boundary.projectId !== outgoing.projectId
+        || !Number.isSafeInteger(boundary.eventSequence) || boundary.eventSequence < 1
+        || typeof boundary.lastEventId !== 'string' || !boundary.lastEventId
+        || !Number.isSafeInteger(boundary.recordCount)
+        || !Number.isSafeInteger(boundary.eventCount) || boundary.eventCount < 1) {
+        throw new Error('Continuity store returned an invalid Project history boundary');
+      }
+      const timestamp = requiredText(checkpointedAt ?? boundary.capturedAt, 'checkpointedAt');
+      const checkpointId = randomUUID();
+
+      withTransaction(db, () => {
+        const stillConfirmed = db.prepare(`
+          SELECT 1 FROM activation_requests r
+          JOIN activation_confirmations c ON c.activation_request_id = r.id
+          WHERE r.id = ? AND r.session_id = ? AND r.project_id = ?
+        `).get(request, incoming.sessionId, incoming.projectId);
+        if (!stillConfirmed) throw new Error('Incoming activation request is no longer confirmed');
+
+        const stillActive = db.prepare(`
+          SELECT 1 FROM project_activations a
+          WHERE a.id = ? AND a.session_id = ? AND a.project_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM session_lifecycle_events e
+              WHERE e.activation_id = a.id AND e.event_type = 'activation_ended'
+            )
+        `).get(outgoing.id, outgoing.sessionId, outgoing.projectId);
+        if (!stillActive) throw new Error('Outgoing Project Activation is no longer active');
+
+        if (db.prepare(
+          'SELECT 1 FROM outgoing_checkpoints WHERE incoming_activation_request_id = ?',
+        ).get(request)) {
+          throw new Error('Incoming activation request already has an outgoing checkpoint');
+        }
+
+        const lifecycleSequence = db.prepare(
+          'SELECT COALESCE(MAX(sequence), 0) AS sequence FROM session_lifecycle_events WHERE session_id = ?',
+        ).get(incoming.sessionId).sequence;
+        db.prepare(`
+          INSERT INTO outgoing_checkpoints
+            (id, session_id, project_id, outgoing_activation_id,
+             incoming_activation_request_id, handover_snapshot_id,
+             project_event_sequence, project_event_id, project_event_at,
+             project_record_count, project_event_count, lifecycle_event_sequence,
+             checkpointed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          checkpointId, incoming.sessionId, outgoing.projectId, outgoing.id,
+          request, outgoing.handoverSnapshotId, boundary.eventSequence,
+          boundary.lastEventId, boundary.lastEventAt, boundary.recordCount,
+          boundary.eventCount, lifecycleSequence, timestamp,
+        );
+
+        appendEvent({
+          sessionId: incoming.sessionId, eventType: 'activation_checkpointed',
+          projectId: outgoing.projectId, activationRequestId: request,
+          activationId: outgoing.id, handoverSnapshotId: outgoing.handoverSnapshotId,
+          checkpointId, summary: 'Outgoing activation checkpointed at project event sequence '
+            + boundary.eventSequence, occurredAt: timestamp,
+        });
+        appendEvent({
+          sessionId: incoming.sessionId, eventType: 'activation_ended',
+          projectId: outgoing.projectId, activationRequestId: request,
+          activationId: outgoing.id, handoverSnapshotId: outgoing.handoverSnapshotId,
+          checkpointId, summary: 'Outgoing Project Activation ended after checkpoint',
+          occurredAt: timestamp,
+        });
+      });
+
+      return this.listCheckpoints(incoming.sessionId).find((item) => item.id === checkpointId);
     },
 
     async confirmProjectActivation({ requestId, confirmationToken }) {
@@ -458,7 +617,17 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       if (!this.getSession(session)) throw new Error('Session not found: ' + session);
       if (!continuityStore.getProject(project)) throw new Error('Project not found: ' + project);
       if (this.getActiveActivation(session)) {
-        throw new Error('Session already has an active Project Activation; switching is not yet supported');
+        throw new Error('Outgoing Project Activation must be checkpointed before incoming activation delivery');
+      }
+      const previousActivation = db.prepare(`
+        SELECT project_id AS projectId FROM project_activations
+        WHERE session_id = ? ORDER BY rowid DESC LIMIT 1
+      `).get(session);
+      if (previousActivation && previousActivation.projectId !== project
+        && !db.prepare(
+          'SELECT 1 FROM outgoing_checkpoints WHERE incoming_activation_request_id = ? LIMIT 1',
+        ).get(request)) {
+        throw new Error('Project switch requires an outgoing activation checkpoint');
       }
       if (!providerAdapter || typeof providerAdapter.deliver !== 'function'
         || !providerAdapter.capabilities || providerAdapter.capabilities.contextDelivery !== true) {
