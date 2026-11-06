@@ -116,7 +116,166 @@ test('simulated provider rejects malformed delivery requests', async () => {
 
 // Scenarios not yet implemented remain explicit TODOs. Implemented coverage
 // currently includes initial activation, confirmation, delivery recovery and checkpoint foundations.
-test.todo('SLA-02: switching A to B checkpoints A and activates B only after delivery');
+test('SLA-02: switching A to B checkpoints A and activates B only after delivery', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-switch-project-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+
+  let resolveDelivery;
+  let signalDeliveryStarted;
+  const deliveryStarted = new Promise((resolve) => { signalDeliveryStarted = resolve; });
+  const deliveryResult = new Promise((resolve) => { resolveDelivery = resolve; });
+  let capturedDelivery;
+  const provider = {
+    capabilities: {
+      contextDelivery: true,
+      acknowledgementLevel: 'payload_accepted',
+      provesModelComprehension: false,
+    },
+    async deliver(input) {
+      capturedDelivery = input;
+      signalDeliveryStarted();
+      return deliveryResult;
+    },
+  };
+
+  const confirm = async (requestId, projectId) => lifecycle.confirmProjectActivation({
+    requestId,
+    confirmationToken: authority.issue({
+      requestId, sessionId: 'session-switch', projectId,
+    }),
+  });
+
+  try {
+    store.createProject({ id: 'switch-project-a', name: 'Project A' });
+    store.createProject({ id: 'switch-project-b', name: 'Project B' });
+    store.appendRecord({
+      id: 'switch-a-record-1', projectId: 'switch-project-a',
+      category: 'requirement', content: 'A context before switching.',
+      originType: 'user',
+    });
+    store.appendRecord({
+      id: 'switch-b-record-1', projectId: 'switch-project-b',
+      category: 'requirement', content: 'B context to deliver.',
+      originType: 'user',
+    });
+    lifecycle.createSession({ id: 'session-switch', providerName: 'simulated-provider' });
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-switch', projectId: 'switch-project-a',
+      requestId: 'request-switch-a',
+    });
+    await confirm('request-switch-a', 'switch-project-a');
+    const firstA = await lifecycle.activateProject({
+      requestId: 'request-switch-a',
+      providerAdapter: createSimulatedProvider({ outcomes: ['acknowledged'] }),
+    });
+    assert.equal(firstA.status, 'active');
+    assert.equal(lifecycle.getActiveActivation('session-switch').id, firstA.activation.id);
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-switch', projectId: 'switch-project-b',
+      requestId: 'request-switch-b',
+    });
+    await confirm('request-switch-b', 'switch-project-b');
+    const checkpoint = lifecycle.checkpointActiveActivation({
+      requestId: 'request-switch-b',
+    });
+
+    assert.equal(checkpoint.outgoingActivationId, firstA.activation.id);
+    assert.equal(checkpoint.projectId, 'switch-project-a');
+    assert.equal(lifecycle.getActiveActivation('session-switch'), null);
+
+    const switching = lifecycle.activateProject({
+      requestId: 'request-switch-b',
+      providerAdapter: provider,
+    });
+    await deliveryStarted;
+
+    // The provider has received the prepared B handover but has not yet
+    // acknowledged it. No B activation may exist at this point.
+    assert.equal(capturedDelivery.activationRequestId, 'request-switch-b');
+    assert.equal(capturedDelivery.handover.projectId, 'switch-project-b');
+    assert.ok(capturedDelivery.deliveryId);
+    assert.equal(capturedDelivery.idempotencyKey, capturedDelivery.deliveryId);
+    assert.equal(lifecycle.getActiveActivation('session-switch'), null);
+    assert.deepEqual(
+      lifecycle.listActivations('session-switch').map((item) => item.projectId),
+      ['switch-project-a'],
+    );
+    assert.deepEqual(
+      lifecycle.listDeliveryAttempts('session-switch').map((item) => item.outcome),
+      ['acknowledged'],
+    );
+    assert.deepEqual(lifecycle.listCheckpoints('session-switch'), [checkpoint]);
+
+    resolveDelivery({
+      deliveryId: capturedDelivery.deliveryId,
+      activationRequestId: capturedDelivery.activationRequestId,
+      handoverId: capturedDelivery.handover.id,
+      attemptId: 'provider-switch-b-ack',
+      providerReference: 'simulated-switch-b',
+      outcome: 'acknowledged',
+      acknowledgementLevel: 'payload_accepted',
+    });
+    const activatedB = await switching;
+
+    assert.equal(activatedB.status, 'active');
+    assert.equal(activatedB.reason, null);
+    assert.equal(activatedB.activation.projectId, 'switch-project-b');
+    assert.notEqual(activatedB.activation.id, firstA.activation.id);
+    assert.equal(activatedB.handoverId, capturedDelivery.handover.id);
+    assert.equal(lifecycle.getActiveActivation('session-switch').id,
+      activatedB.activation.id);
+    assert.equal(lifecycle.getActiveActivation('session-switch').projectId,
+      'switch-project-b');
+
+    const activations = lifecycle.listActivations('session-switch');
+    assert.deepEqual(activations.map((item) => item.projectId), [
+      'switch-project-a', 'switch-project-b',
+    ]);
+    assert.equal(activations[0].id, firstA.activation.id);
+    assert.equal(activations[1].id, activatedB.activation.id);
+    assert.equal(activations[1].handoverSnapshotId, activatedB.handoverId);
+
+    const attempts = lifecycle.listDeliveryAttempts('session-switch');
+    assert.deepEqual(attempts.map((item) => item.outcome), [
+      'acknowledged', 'acknowledged',
+    ]);
+    assert.equal(attempts[1].activationRequestId, 'request-switch-b');
+    assert.equal(attempts[1].handoverSnapshotId, activatedB.handoverId);
+    assert.equal(attempts[1].deliveryId, capturedDelivery.deliveryId);
+
+    const events = lifecycle.listEvents('session-switch');
+    const checkpointEvent = events.find((event) =>
+      event.eventType === 'activation_checkpointed'
+      && event.activationRequestId === 'request-switch-b');
+    const endedEvent = events.find((event) =>
+      event.eventType === 'activation_ended'
+      && event.activationId === firstA.activation.id);
+    const acknowledgedEvent = events.find((event) =>
+      event.eventType === 'delivery_acknowledged'
+      && event.activationRequestId === 'request-switch-b');
+    const activatedEvent = events.find((event) =>
+      event.eventType === 'project_activated'
+      && event.activationRequestId === 'request-switch-b');
+    assert.ok(checkpointEvent);
+    assert.ok(endedEvent);
+    assert.ok(acknowledgedEvent);
+    assert.ok(activatedEvent);
+    assert.ok(checkpointEvent.sequence < endedEvent.sequence);
+    assert.ok(endedEvent.sequence < acknowledgedEvent.sequence);
+    assert.ok(acknowledgedEvent.sequence < activatedEvent.sequence);
+    assert.equal(activatedEvent.activationId, activatedB.activation.id);
+    assert.equal(lifecycle.listCheckpoints('session-switch').length, 1);
+  } finally {
+    lifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 test('SLA-03: returning B to A creates a fresh A activation and handover', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-return-project-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
