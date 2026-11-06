@@ -117,7 +117,116 @@ test('simulated provider rejects malformed delivery requests', async () => {
 // Scenarios not yet implemented remain explicit TODOs. Implemented coverage
 // currently includes initial activation, confirmation, delivery recovery and checkpoint foundations.
 test.todo('SLA-02: switching A to B checkpoints A and activates B only after delivery');
-test.todo('SLA-03: returning B to A creates a fresh A activation and handover');
+test('SLA-03: returning B to A creates a fresh A activation and handover', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-return-project-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const provider = createSimulatedProvider({
+    outcomes: ['acknowledged', 'acknowledged', 'acknowledged'],
+  });
+
+  const confirm = async (requestId, projectId) => lifecycle.confirmProjectActivation({
+    requestId,
+    confirmationToken: authority.issue({
+      requestId, sessionId: 'session-return', projectId,
+    }),
+  });
+  const activate = (requestId) => lifecycle.activateProject({
+    requestId, providerAdapter: provider,
+  });
+
+  try {
+    store.createProject({ id: 'project-a', name: 'Project A' });
+    store.createProject({ id: 'project-b', name: 'Project B' });
+    store.appendRecord({
+      id: 'project-a-record-1', projectId: 'project-a',
+      category: 'requirement', content: 'Original A context.',
+      originType: 'user',
+    });
+    store.appendRecord({
+      id: 'project-b-record-1', projectId: 'project-b',
+      category: 'requirement', content: 'B context.',
+      originType: 'user',
+    });
+    lifecycle.createSession({ id: 'session-return', providerName: 'simulated-provider' });
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-return', projectId: 'project-a', requestId: 'request-a-first',
+    });
+    await confirm('request-a-first', 'project-a');
+    const firstA = await activate('request-a-first');
+    assert.equal(firstA.status, 'active');
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-return', projectId: 'project-b', requestId: 'request-b',
+    });
+    await confirm('request-b', 'project-b');
+    lifecycle.checkpointActiveActivation({ requestId: 'request-b' });
+    const activatedB = await activate('request-b');
+    assert.equal(activatedB.status, 'active');
+
+    store.appendRecord({
+      id: 'project-a-record-2', projectId: 'project-a',
+      category: 'decision', content: 'A changed while B was active.',
+      originType: 'user',
+    });
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-return', projectId: 'project-a', requestId: 'request-a-return',
+    });
+    await confirm('request-a-return', 'project-a');
+    lifecycle.checkpointActiveActivation({ requestId: 'request-a-return' });
+    const returnedA = await activate('request-a-return');
+    assert.equal(returnedA.status, 'active');
+
+    const activations = lifecycle.listActivations('session-return');
+    assert.deepEqual(activations.map((item) => item.projectId), [
+      'project-a', 'project-b', 'project-a',
+    ]);
+    assert.notEqual(activations[0].id, activations[2].id);
+    assert.notEqual(activations[0].handoverSnapshotId, activations[2].handoverSnapshotId);
+    assert.equal(lifecycle.getActiveActivation('session-return').id, returnedA.activation.id);
+    assert.equal(lifecycle.getActiveActivation('session-return').projectId, 'project-a');
+
+    const inspect = new DatabaseSync(databasePath);
+    try {
+      const snapshots = inspect.prepare(`
+        SELECT id, payload_json AS payloadJson
+        FROM handover_snapshots
+        WHERE activation_request_id = ?
+      `);
+      const originalA = snapshots.get('request-a-first');
+      const latestA = snapshots.get('request-a-return');
+      assert.equal(originalA.id, firstA.handoverId);
+      assert.equal(latestA.id, returnedA.handoverId);
+      const originalPayload = JSON.parse(originalA.payloadJson);
+      const latestPayload = JSON.parse(latestA.payloadJson);
+      assert.equal(originalPayload.records.some((record) => record.id === 'project-a-record-2'), false);
+      assert.equal(latestPayload.records.some((record) => record.id === 'project-a-record-2'), true);
+      assert.equal(
+        inspect.prepare('SELECT COUNT(*) AS count FROM handover_snapshots WHERE activation_request_id = ?')
+          .get('request-a-first').count,
+        1,
+      );
+    } finally {
+      inspect.close();
+    }
+
+    const checkpoints = lifecycle.listCheckpoints('session-return');
+    assert.deepEqual(checkpoints.map((item) => item.projectId), ['project-a', 'project-b']);
+    assert.equal(checkpoints[0].outgoingActivationId, firstA.activation.id);
+    assert.equal(checkpoints[1].outgoingActivationId, activatedB.activation.id);
+    assert.equal(lifecycle.listDeliveryAttempts('session-return').length, 3);
+    assert.ok(lifecycle.listDeliveryAttempts('session-return')
+      .every((attempt) => attempt.outcome === 'acknowledged'));
+  } finally {
+    lifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 test.todo('SLA-05: failed transition preserves the outgoing checkpoint and all history');
 test.todo('SLA-06: contributions use the active Project Activation');
 test.todo('SLA-07: a newer contribution marks another active activation potentially stale');
