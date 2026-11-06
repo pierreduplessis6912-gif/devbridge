@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../src/store.mjs';
 
 function withStore(run) {
@@ -94,6 +95,41 @@ test('failed sync-enabled contribution leaves no record, event, sequence, or out
   store.appendRecord({
     id: 'valid', projectId: 'p1', category: 'decision',
     content: 'First valid contribution', originType: 'user',
+  });
+  assert.equal(store.listSyncOutbox()[0].deviceProjectSequence, 1);
+}));
+
+test('outbox insertion failure rolls back the local record, event, and device sequence', () => withStore(({ store, databasePath }) => {
+  store.configureLocalSyncDevice({ deviceId: 'device-a' });
+  store.createProject({ id: 'p1', name: 'Outbox rollback test' });
+  store.enableProjectSync('p1');
+
+  const db = new DatabaseSync(databasePath);
+  db.exec(`
+    CREATE TRIGGER fail_sync_outbox_insert
+    BEFORE INSERT ON sync_outbox
+    BEGIN
+      SELECT RAISE(ABORT, 'simulated outbox failure');
+    END;
+  `);
+  db.close();
+
+  assert.throws(() => store.appendRecord({
+    id: 'must-rollback', projectId: 'p1', category: 'decision',
+    content: 'The local record and outbox must commit together', originType: 'user',
+  }), /simulated outbox failure/);
+
+  assert.equal(store.getRecord('must-rollback'), null);
+  assert.equal(store.listEvents('p1').length, 1);
+  assert.deepEqual(store.listSyncOutbox(), []);
+
+  const cleanup = new DatabaseSync(databasePath);
+  cleanup.exec('DROP TRIGGER fail_sync_outbox_insert');
+  cleanup.close();
+
+  store.appendRecord({
+    id: 'after-rollback', projectId: 'p1', category: 'decision',
+    content: 'The sequence should still begin at one', originType: 'user',
   });
   assert.equal(store.listSyncOutbox()[0].deviceProjectSequence, 1);
 }));
