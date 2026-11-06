@@ -555,7 +555,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     CREATE TRIGGER IF NOT EXISTS contribution_intents_no_delete
       BEFORE DELETE ON contribution_intents
       BEGIN SELECT RAISE(ABORT, 'contribution intents are append-only'); END;
-    CREATE TRIGGER IF NOT EXISTS project_records_block_stale_continuation
+    DROP TRIGGER IF EXISTS project_records_block_stale_continuation;
+    CREATE TRIGGER project_records_block_stale_continuation
       BEFORE INSERT ON project_records
       WHEN NEW.activation_id IS NOT NULL
         AND EXISTS (
@@ -1315,6 +1316,9 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         throw error;
       }
       const recordId = requiredText(id, 'id');
+      if (continuityStore.getRecord(recordId)) {
+        throw new Error('Contribution record id already exists: ' + recordId);
+      }
       const timestamp = requiredText(recordedAt, 'recordedAt');
       const payload = {
         id: recordId, projectId: active.projectId, category, content, originType,
@@ -1383,7 +1387,17 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       `).get(requiredText(intentId, 'intentId'));
       if (!intent) throw new Error('Contribution intent not found');
       const existing = continuityStore.getRecord(intent.recordId);
-      if (existing) return existing;
+      if (existing) {
+        if (existing.sessionId !== db.prepare(
+          'SELECT session_id FROM contribution_intents WHERE id = ?',
+        ).get(intent.id).session_id
+          || existing.activationId !== db.prepare(
+            'SELECT activation_id FROM contribution_intents WHERE id = ?',
+          ).get(intent.id).activation_id) {
+          throw new Error('Contribution record id is already occupied by a different record');
+        }
+        return existing;
+      }
       const payload = JSON.parse(intent.payloadJson);
       // The immutable reservation allows this already-submitted contribution
       // to finish if another Session makes its activation stale in the meantime.
