@@ -442,6 +442,67 @@ export function openStore(databasePath) {
       return this.getRecord(recordId);
     },
 
+    configureLocalSyncDevice({ deviceId = null, createdAt = new Date().toISOString() } = {}) {
+      ensureOpen();
+      const timestamp = requiredText(createdAt, 'createdAt');
+      const existing = db.prepare(
+        'SELECT device_id AS deviceId, created_at AS createdAt FROM sync_local_device WHERE singleton_id = 1',
+      ).get();
+      if (existing) {
+        if (deviceId !== null && requiredText(deviceId, 'deviceId') !== existing.deviceId) {
+          throw new Error('A local sync device is already configured; device replacement requires the recovery workflow');
+        }
+        return existing;
+      }
+      const id = requiredText(deviceId ?? randomUUID(), 'deviceId');
+      db.prepare('INSERT INTO sync_local_device (singleton_id, device_id, created_at) VALUES (1, ?, ?)').run(id, timestamp);
+      return { deviceId: id, createdAt: timestamp };
+    },
+
+    getLocalSyncDevice() {
+      ensureOpen();
+      return db.prepare(
+        'SELECT device_id AS deviceId, created_at AS createdAt FROM sync_local_device WHERE singleton_id = 1',
+      ).get() ?? null;
+    },
+
+    enableProjectSync(projectId, { enabledAt = new Date().toISOString() } = {}) {
+      ensureOpen();
+      const project = requiredText(projectId, 'projectId');
+      const timestamp = requiredText(enabledAt, 'enabledAt');
+      if (!this.getLocalSyncDevice()) throw new Error('Configure the local sync device before enabling Project sync');
+      if (!this.getProject(project)) throw new Error('Project not found: ' + project);
+      const recordCount = db.prepare('SELECT COUNT(*) AS count FROM project_records WHERE project_id = ?').get(project).count;
+      if (recordCount !== 0) {
+        throw new Error('Project sync bootstrap for existing history is not implemented; existing Projects require an explicit adoption/bootstrap workflow');
+      }
+      db.prepare("INSERT INTO sync_project_enrolments (project_id, status, enabled_at) VALUES (?, 'enabled', ?)").run(project, timestamp);
+      return { projectId: project, status: 'enabled', enabledAt: timestamp };
+    },
+
+    getProjectSyncStatus(projectId) {
+      ensureOpen();
+      const project = requiredText(projectId, 'projectId');
+      return db.prepare('SELECT project_id AS projectId, status, enabled_at AS enabledAt FROM sync_project_enrolments WHERE project_id = ?').get(project) ?? null;
+    },
+
+    listSyncOutbox({ projectId = null } = {}) {
+      ensureOpen();
+      const project = optionalText(projectId, 'projectId');
+      const sql = 'SELECT o.contribution_id AS contributionId, c.project_id AS projectId, c.origin_device_id AS originDeviceId, c.device_project_sequence AS deviceProjectSequence, c.created_at AS createdAt, o.state, o.attempts, o.next_attempt_at AS nextAttemptAt, o.last_error_code AS lastErrorCode, o.server_received_at AS serverReceivedAt FROM sync_outbox o JOIN sync_contributions c ON c.contribution_id = o.contribution_id ' + (project ? 'WHERE c.project_id = ? ' : '') + 'ORDER BY c.created_at, c.contribution_id';
+      return project ? db.prepare(sql).all(project) : db.prepare(sql).all();
+    },
+
+    getSyncContribution(contributionId) {
+      ensureOpen();
+      const id = requiredText(contributionId, 'contributionId');
+      const row = db.prepare('SELECT contribution_id AS contributionId, project_id AS projectId, origin_device_id AS originDeviceId, device_project_sequence AS deviceProjectSequence, created_at AS createdAt, protocol_version AS protocolVersion, schema_version AS schemaVersion, payload_json AS payloadJson, state FROM sync_contributions WHERE contribution_id = ?').get(id);
+      if (!row) return null;
+      const payload = JSON.parse(row.payloadJson);
+      delete row.payloadJson;
+      return { ...row, payload };
+    },
+
     getProjectHistoryBoundary(projectId) {
       ensureOpen();
       const project = requiredText(projectId, 'projectId');
