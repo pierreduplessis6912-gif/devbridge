@@ -66,7 +66,7 @@ export function openStore(databasePath) {
     db.exec('PRAGMA synchronous = FULL');
 
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 4) {
+    if (version > 5) {
       throw new Error(`Database schema version ${version} is newer than this application supports`);
     }
 
@@ -241,6 +241,59 @@ export function openStore(databasePath) {
             ON project_records(session_id, activation_id);
           PRAGMA user_version = 4;
         `);
+      });
+    }
+
+    // Version 5 adds explicit local sync opt-in and a durable local outbox.
+    if (version < 5) {
+      withTransaction(db, () => {
+        db.exec("
+          CREATE TABLE sync_local_device (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            device_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+          ) STRICT;
+          CREATE TABLE sync_project_enrolments (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id),
+            status TEXT NOT NULL CHECK (status IN ('enabled', 'paused')),
+            enabled_at TEXT NOT NULL
+          ) STRICT;
+          CREATE TABLE sync_project_device_sequences (
+            project_id TEXT NOT NULL REFERENCES projects(id),
+            device_id TEXT NOT NULL REFERENCES sync_local_device(device_id),
+            last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0),
+            PRIMARY KEY (project_id, device_id)
+          ) STRICT;
+          CREATE TABLE sync_contributions (
+            contribution_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id),
+            origin_device_id TEXT NOT NULL,
+            device_project_sequence INTEGER NOT NULL CHECK (device_project_sequence > 0),
+            created_at TEXT NOT NULL,
+            protocol_version INTEGER NOT NULL CHECK (protocol_version > 0),
+            schema_version INTEGER NOT NULL CHECK (schema_version > 0),
+            payload_json TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('pending_seal', 'ready', 'server_received', 'quarantined')),
+            UNIQUE (project_id, origin_device_id, device_project_sequence)
+          ) STRICT;
+          CREATE TABLE sync_outbox (
+            contribution_id TEXT PRIMARY KEY REFERENCES sync_contributions(contribution_id),
+            state TEXT NOT NULL CHECK (state IN ('pending_seal', 'ready', 'uploading', 'server_received', 'retryable_failure', 'quarantined')),
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+            next_attempt_at TEXT,
+            last_error_code TEXT,
+            server_received_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+          CREATE TABLE sync_record_contributions (
+            record_id TEXT PRIMARY KEY REFERENCES project_records(id),
+            contribution_id TEXT NOT NULL REFERENCES sync_contributions(contribution_id)
+          ) STRICT;
+          CREATE INDEX sync_contributions_project_sequence ON sync_contributions(project_id, origin_device_id, device_project_sequence);
+          CREATE INDEX sync_outbox_state_created ON sync_outbox(state, created_at, contribution_id);
+          PRAGMA user_version = 5;
+        ");
       });
     }
   } catch (error) {
