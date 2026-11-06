@@ -598,6 +598,7 @@ test('SLT-23: outgoing checkpoint captures a durable Project history boundary an
     );
     assert.equal(lifecycle.listDeliveryAttempts('session-checkpoint').length, 1);
 
+    const priorLifecycleSequence = lifecycle.listEvents('session-checkpoint').at(-1).sequence;
     const checkpoint = lifecycle.checkpointActiveActivation({
       requestId: 'request-checkpoint-b',
     });
@@ -610,7 +611,7 @@ test('SLT-23: outgoing checkpoint captures a durable Project history boundary an
     assert.equal(checkpoint.projectEventId, boundaryBeforeCheckpoint.lastEventId);
     assert.equal(checkpoint.projectRecordCount, 2);
     assert.equal(checkpoint.projectEventCount, boundaryBeforeCheckpoint.eventCount);
-    assert.equal(checkpoint.lifecycleEventSequence, 7);
+    assert.equal(checkpoint.lifecycleEventSequence, priorLifecycleSequence);
     assert.equal(lifecycle.getActiveActivation('session-checkpoint'), null);
 
     const checkpointEvents = lifecycle.listEvents('session-checkpoint').slice(-2);
