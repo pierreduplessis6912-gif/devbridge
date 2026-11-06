@@ -366,7 +366,7 @@ The branch now includes a terminal Session-ending transition. It appends one `se
 
 An already-reserved contribution may finish committing because its submission was accepted before the Session ended. An in-flight provider delivery or context refresh may append its eventual outcome after Session ending, but a late acknowledgement cannot create an activation or resume the Session. Unknown delivery outcomes remain Unknown and are not replayed. Repeating the Session-ending operation returns the existing end event rather than appending another.
 
-Dedicated tests cover Project/history preservation, terminal operation guards, late acknowledged and Unknown provider outcomes, prevention of late activation/replay, and completion of a pre-end reserved contribution. The user must run the full test suite locally before SLA-12 can be marked verified or closed.
+Dedicated tests cover Project/history preservation, terminal operation guards, late acknowledged and Unknown provider outcomes, prevention of late activation/replay, and completion of a pre-end reserved contribution. The subsequent Termux run recorded below passed the complete suite with zero failures; SLA-12 is locally verified and closed.
 
 
 ### SLA-12 Termux verification
@@ -387,3 +387,38 @@ All four dedicated SLA-12 tests passed: Session ending preserves Project identit
 The first run exposed an unsupported test fixture category (`note`); the fixture was corrected to use the supported `status` category in commit `83667c6`. The complete suite then passed with zero failures. The five TODO entries are remaining acceptance placeholders, not failed or skipped tests.
 
 This verifies the implemented SLA-12 scenarios in the local SQLite test environment. It does not establish real-provider behaviour, production authentication/authorization, multi-device synchronisation, backup/restore or production readiness. SLA-12 is locally verified and closed.
+
+
+## 9. Lifecycle closure review — current branch status
+
+Reviewed on branch `build/v1-scope` after the user's Termux verification at commit `357cb47`.
+
+The five remaining `test.todo()` declarations in `test/session-lifecycle.test.mjs` were duplicate placeholders for acceptance scenarios that already have dedicated executable tests:
+
+| Acceptance item | Dedicated test file |
+|---|---|
+| SLA-06 — Contribution attribution | `test/contribution-attribution.test.mjs` |
+| SLA-07 — Staleness detection and refresh | `test/staleness-detection.test.mjs` |
+| SLA-09 — Concurrent contributions | `test/concurrent-contributions.test.mjs` |
+| SLA-10 — Semantic neutrality | `test/semantic-neutrality.test.mjs` |
+| SLA-11 — Cross-Project reference | `test/cross-project-reference.test.mjs` |
+| SLA-12 — Session ending | `test/session-ending.test.mjs` |
+
+The duplicate TODO declarations and their outdated introductory comment have been removed. The acceptance criteria remain intact. Historical test counts above describe the branch at the time of each earlier run; they are not current test-run results.
+
+**Latest user-reported full local verification before this cleanup:** Android/Termux, Node.js v26.3.1, `npm test`, 46 tests, 41 passed, 0 failed, 0 cancelled, 0 skipped and 5 TODO placeholders. The five TODOs were the duplicate declarations removed by this cleanup. No new test execution is implied by this documentation update; the user should run the suite again after pulling the cleanup commit.
+
+### Lifecycle status
+
+SLA-01 through SLA-12 have implementation and dedicated executable test coverage in this branch. This is a statement about the current code and its local deterministic test coverage, not a claim that every production or deployment property has been proven.
+
+### Remaining engineering gates — not lifecycle TODOs
+
+- **Authentication and Project authorization:** production user/account-level authorization is not established. Direct Project lookup and handover APIs remain addressable by Project ID. This must be addressed before multi-user or untrusted-client exposure.
+- **Real provider integration:** no real provider adapter has been verified. Simulated-provider tests do not establish compatibility with a provider's actual delivery or acknowledgement semantics.
+- **Provider reconciliation:** real provider status reconciliation and safe idempotent retry are not implemented. Unknown delivery remains fail-closed and is not automatically replayed.
+- **Multi-process concurrency:** local SQLite tests do not prove production multi-process concurrency behaviour.
+- **Backup and restore:** production backup, restore and disaster-recovery behaviour remain unverified.
+- **Multi-device continuity:** cross-device synchronisation and conflict-free recovery remain unverified.
+
+These are explicit future security, integration and operational gates. They must not be represented as failed lifecycle tests or silently treated as complete.
