@@ -1,10 +1,10 @@
 # DevBridge V1 — Synchronisation Protocol and Component Design
 
 **Document ID:** SYNC-DESIGN-001  
-**Version:** 0.2  
-**Status:** Proposed technical design; architecture direction accepted, implementation not yet started  
+**Version:** 0.3  
+**Status:** Proposed technical design; local sync persistence partially implemented; production cryptography and Android integration not implemented  
 **Parent:** ADR-SYNC-001  
-**Branch:** build/v1-scope
+**Working branch:** feat/local-sync-persistence
 
 ## 1. Purpose
 
@@ -43,8 +43,9 @@ The following decisions have been accepted for the V1 direction:
 | Local Continuity Store | Projects, records, links, local events, local transactional persistence | Account authentication or remote delivery |
 | Local Sync Repository | Durable local sync metadata, sequence allocation, outbox, inbox, applied ledger, dependency state | Provider session lifecycle |
 | Contribution Builder | Creates immutable contribution snapshots from local committed changes | Semantic interpretation |
-| Cryptographic Service | Device signing, Project encryption/decryption, verification | Account/Project permission decisions |
-| Device Credential Store | Keeps private signing and recovery-related secrets in platform-protected storage | Server-side private-key custody |
+| Crypto Provider Interface | Provider-independent API for payload sealing/opening, signing, verification, key agreement, and security-level reporting | Direct private-key or raw Project-key custody in Node |
+| Android Keystore Adapter | Performs production key operations through Android Keystore and a restricted native bridge | Account/Project permission decisions or semantic acceptance |
+| Device Credential Store | Coordinates key aliases, public identities, wrapped Project-key material, and lifecycle metadata; private device keys remain in Android Keystore | Plaintext private keys or readable recovery secrets in SQLite, ordinary files, or the server |
 | Sync Coordinator | Schedules upload/download, retries, cursors, and acknowledgements | Changing contribution content |
 | Acceptance Engine | Validates and atomically applies received contributions | Semantic conflict resolution |
 | Account/Project Authority Client | Obtains and refreshes account, Project, and device permissions | Local content truth |
@@ -62,6 +63,22 @@ The following decisions have been accepted for the V1 direction:
 | Recovery/Enrolment Service | Coordinates trusted-device or recovery-based enrolment without learning user recovery secrets |
 
 The server may see the minimum routing metadata needed to authenticate, store, and deliver ciphertext. It must not receive Project plaintext or dependency relationships. Metadata minimisation remains a security requirement.
+
+### 3.3 Native platform cryptography boundary
+
+The Node core remains provider-independent. Production device-key operations are performed by a native Android component through a narrow Crypto Provider Interface.
+
+The boundary has these requirements:
+
+- Node may construct the contribution payload, canonical envelope bytes, routing metadata, and immutable identifiers. It must never receive private device signing-key or key-agreement-key bytes.
+- Node requests signing, verification, key agreement, Project-payload encryption/decryption, and key-wrapping operations through the provider interface. The provider returns only the public results or operation outputs required by the protocol.
+- Raw Project encryption keys must not be returned to Node or persisted in the local SQLite database, ordinary files, logs, or crash reports. The native provider performs encryption, decryption, and key-unwrapping operations while keeping key material within its protected boundary as far as the platform permits.
+- Decryption necessarily returns Project plaintext to the local continuity/acceptance logic. That is an authorised local data path; it does not justify exposing the Project key itself.
+- The Termux Node process does not automatically inherit access to Android Keystore. A native Android host/companion component and an authenticated IPC mechanism are required. The exact bridge technology remains open.
+- The bridge must authenticate and constrain callers, expose only the required cryptographic operations, and reject unauthorised callers. An unauthenticated localhost socket or unrestricted exported Android service is not an acceptable production boundary.
+- Tests may inject an ephemeral test-only Crypto Provider. Test keys and test-provider status must be unmistakable; the test provider must never satisfy production device enrolment or be selectable as a production security fallback.
+
+The Android component is an adapter, not a replacement for the Node continuity core. This keeps the core portable while making the production trust boundary explicit.
 
 ## 4. Identity model
 
@@ -113,6 +130,29 @@ Dependency IDs remain inside the encrypted payload. The server cannot inspect or
 ### 5.3 Immutable identity
 
 A contribution ID is never reused. The same ID with a different digest is an integrity incident. A retry must resend the exact same immutable envelope, not rebuild a new contribution.
+
+### 5.4 Proposed cryptographic profile — pending compatibility validation
+
+The following is the proposed interoperable profile for review, not yet an approved production implementation:
+
+| Purpose | Proposed standard/profile | Separation requirement |
+|---|---|---|
+| Device signing | ECDSA over NIST P-256 with SHA-256 | Dedicated signing key pair; never reused for key agreement |
+| Device key agreement | ECDH over NIST P-256 | Separate key pair from signing |
+| Key derivation | HKDF-SHA-256 | Context-bound to protocol, account, Project, key version, and participating device identities |
+| Contribution encryption | AES-256-GCM | Unique nonce for every encryption under a given key; authentication tag verified before plaintext is accepted |
+| Ciphertext digest | SHA-256 | Covers the exact canonical encrypted-body representation |
+| Envelope signature | ECDSA P-256 / SHA-256 | Covers the canonical signed envelope fields and ciphertext digest |
+
+The encrypted body must carry the nonce, authentication tag, ciphertext, and encryption-key version. The protocol must define the exact associated authenticated data (AAD), including which visible envelope fields are bound to the ciphertext. Nonce generation and uniqueness are security-critical; nonce reuse under the same AES-GCM key is prohibited.
+
+The envelope signature must bind the contribution ID, Project routing identity, origin device ID, device-local sequence, protocol/schema versions, key version, ciphertext digest, and any other security-relevant routing metadata. The protocol must define one unambiguous signature encoding and public-key encoding for cross-platform verification; DER-encoded ECDSA signatures and X.509 SubjectPublicKeyInfo public keys are proposed candidates.
+
+Canonical serialization is a separate requirement. A formal cross-platform canonical format must be selected and tested. JSON Canonicalization Scheme (RFC 8785) is a candidate, but ordinary JavaScript JSON serialization must not be treated as a cryptographic canonicalization rule.
+
+Project encryption keys are independent random 256-bit keys, versioned per Project. Distribution to another enrolled device requires authenticated key agreement and key wrapping. ECDH plus HKDF-SHA-256 and an authenticated wrapping operation is the proposed direction; the exact wrapping envelope, enrolment binding, and recovery flow remain open.
+
+These candidates must be validated against the minimum supported Android version, the target Android devices, Node interoperability, and independent test vectors before being locked. No production cryptography may be implemented from an unreviewed assumption about algorithm or hardware support.
 
 ## 6. Local commit and outbox atomicity
 
@@ -221,7 +261,7 @@ An acknowledgement is bound to the contribution ID, digest, device identity, and
 
 ## 12. Device identity, enrolment, revocation, and recovery
 
-Each device creates its own signing key pair. Private signing keys remain in platform-protected storage. The server stores or obtains the public key and device authority state.
+Each device has distinct cryptographic identities for signing and key agreement. A Device ID remains an identifier, not proof of authority. The server stores public identities and device authority state; it never receives device private keys.
 
 A new device is enrolled through either:
 
@@ -232,7 +272,34 @@ Account sign-in alone does not grant Project access or decrypt Project history.
 
 Revocation blocks future server-authorised operations. Previously accepted contributions remain valid. Contributions uploaded after revocation are quarantined for explicit user review. A signed creation timestamp does not prove that an offline contribution was created before revocation; stronger evidence or a user review policy is required.
 
-Recovery secrets are generated securely and remain under user control. The server must not receive a readable recovery secret. Key hierarchy, recovery material format, rotation, and loss-of-all-devices consequences must be finalised before cryptographic implementation.
+### 12.1 Device key architecture and Android protection
+
+The production mobile device identity is protected by Android Keystore through the native adapter defined in section 3.3.
+
+- The proposed device signing key is ECDSA P-256 / SHA-256.
+- The proposed device key-agreement key is a separate ECDH P-256 key pair.
+- Private keys are generated within Android Keystore and remain non-exportable wherever the selected Android API and security level support that property.
+- Public keys may be exported and registered with the account/device authority. Public-key identifiers and versions are recorded separately from private-key material.
+- Node requests cryptographic operations; it never reads private key bytes or stores them in SQLite, ordinary files, environment variables, logs, or handover context.
+- Key creation, signing, agreement, and deletion are mediated by the native adapter. Key aliases and lifecycle metadata are not themselves proof of account or Project authority.
+
+StrongBox hardware-backed protection is preferred where available. TEE-backed Android Keystore protection may be an acceptable production level only if the production security policy explicitly permits it. Software-backed keys must be reported as software-backed and must never be described as hardware-backed or silently substituted for a required hardware security level.
+
+The minimum accepted production security level remains an explicit decision. If the required level is unavailable, DevBridge must report that fact and fail closed for the affected production operation, unless the user has explicitly approved a separately defined lower-assurance mode. Any such override must be visible and auditable.
+
+The adapter must report its capabilities and actual key security level, not merely the requested level. It must also report when a key is invalidated, unavailable, or lost so the application can enter a defined recovery path rather than silently generating a replacement identity.
+
+### 12.2 Project encryption and recovery key hierarchy
+
+Each Project has an independent, randomly generated 256-bit content-encryption key with an explicit key version. Project keys are never reused as device signing keys, device key-agreement keys, or account recovery keys.
+
+- The native provider performs Project encryption/decryption and key-unwrapping operations. Raw Project keys are not exposed to Node or persisted as plaintext in SQLite or ordinary files.
+- Project-key material stored on a device must be protected by a device-specific Android Keystore wrapping/protection mechanism. The stored representation is encrypted key material, not a readable Project key.
+- Sharing a Project with another enrolled device requires an authenticated, context-bound key-transfer operation. The transfer must bind the account, Project, key version, sender device, recipient device, and enrolment authority.
+- Key rotation creates a new Project-key version. The design must specify how older contributions remain decryptable, how keys are rewrapped for active devices, and when old key versions may be retired.
+- The exact Project-key wrapping format, transient key handling, rotation policy, backup behaviour, and recovery protocol remain open design items. They must be resolved together; a non-exportable device private key must not be made exportable merely to simplify key transfer.
+
+Recovery secrets are generated securely and remain under user control. The server must not receive a readable recovery secret. Recovery must restore or rewrap Project-key access for a newly enrolled device without granting access merely because the user signed in. The key hierarchy, recovery material format, rotation, and loss-of-all-devices consequences must be finalised before production cryptographic implementation.
 
 ## 13. Project boundaries and cross-Project references
 
@@ -268,15 +335,15 @@ All migrations must be tested against disposable database copies. The user's act
 
 ## 16. Current repository mapping
 
-The following mapping is based on source inspection of build/v1-scope.
+The following mapping is based on source inspection of feat/local-sync-persistence at commit b74d938.
 
 | Existing source | Observed responsibility | Sync design treatment |
 |---|---|---|
-| src/store.mjs | Owns a SQLite connection; schema v1–v4; Project/record/link/event persistence; append-only protections; transactional local appendRecord; local event sequence; handover | Preserve as continuity foundation. Extend through a transaction-aware persistence boundary so local record/event and sync outbox work can commit together. Do not reinterpret event sequence as device sequence. |
+| src/store.mjs | Owns a SQLite connection; schema v1–v5; Project/record/link/event persistence; transactional local appendRecord; local event sequence; handover; local sync device configuration; explicit Project sync enrolment; per-device Project sequence allocation; immutable local contribution snapshots; sync outbox; record-to-contribution mapping | Preserve as continuity foundation. Local record/event and sync outbox creation now share one transaction. Device ID is still only a local identifier, not a cryptographic identity. No sealing, signing, encryption, upload, inbox, or remote acceptance is implemented. |
 | src/session-lifecycle.mjs | Opens a separate SQLite connection; manages sessions, activations, handovers, provider delivery attempts, stale context, contribution intents and commits | Keep as session lifecycle. Session/activation IDs remain optional contribution attribution. Do not make lifecycle IDs sync identities. Review separate-connection transaction boundary before coupling any operation across modules. |
 | src/cross-project-references.mjs | Stores source/target Project IDs and label; explicitly states it is not an authorization system | Preserve separation. Sync references only as references; never infer membership or target Project access. |
 | src/cli.mjs | Local continuity CLI; defaults to .devbridge/devbridge.sqlite; creates directory and opens store | Do not run against default DB during tests. Future sync commands must require explicit account/device setup and safe database selection. |
-| package.json | Node ESM package, Node >=22.13, test and local CLI scripts; no declared dependencies | Evaluate cryptographic and server dependencies only after compatibility/security review. |
+| package.json | Node ESM package, Node >=22.13, test and local CLI scripts; no declared dependencies | Keep the core provider-independent. Review any native bridge, cryptographic, or server dependency before adoption. |
 
 ### 16.1 Important implementation consequence: transaction ownership
 
@@ -291,13 +358,14 @@ The recommended first implementation is to add a transaction-aware sync persiste
 The inspected source does not yet implement:
 
 - account identity, Project ownership or membership;
-- device identity, enrolment or revocation;
-- device signing keys or contribution signatures;
-- end-to-end encryption or Project key distribution;
-- sync contribution bundles;
-- outbox/inbox or applied contribution ledger;
+- cryptographic device identity, enrolment, public-key registration, or revocation (the current local Device ID is only an identifier);
+- Android Keystore integration or the native Crypto Provider bridge;
+- device signing, key agreement, production contribution signatures, or end-to-end encryption;
+- Project-key distribution, rotation, recovery, or hardware security-level policy;
+- canonical sealed-envelope generation and durable persistence of the exact sealed envelope;
+- resumable sealing worker, inbox, or applied contribution ledger;
 - remote import/application or dependency staging;
-- server archive, transport, cursors or sync acknowledgements;
+- server archive, transport, cursors, or sync acknowledgements;
 - full archive export/import or independent restore;
 - distributed deletion or anti-resurrection.
 
@@ -305,20 +373,33 @@ Existing lifecycle acknowledgements relate to AI-provider context delivery, not 
 
 ## 17. Implementation milestones
 
-### Milestone 0 — Protocol and threat model
-- Finalise canonical envelope and payload schema.
-- Define integrity/signature coverage.
-- Define routing metadata and privacy exposure.
-- Define authority and revocation evidence.
-- Select cryptographic standards and Android-compatible libraries after review.
+### Milestone 0 — Protocol, cryptographic profile, and threat model
+
+- Finalise canonical envelope and payload schema, including byte-level canonical serialization.
+- Define integrity/signature coverage, signature encoding, public-key encoding, nonce handling, and authenticated associated data.
+- Validate the proposed ECDSA P-256, ECDH P-256, HKDF-SHA-256, AES-256-GCM, and SHA-256 profile across Node and the supported Android API range.
+- Define the Android native adapter boundary, authenticated IPC mechanism, caller restrictions, and failure behaviour.
+- Define the minimum production key security level and the StrongBox/TEE/software-backed policy.
+- Define Project-key wrapping, rotation, recovery, authority, and revocation evidence.
+- Complete the threat model and review metadata exposure before production cryptographic implementation.
 
 ### Milestone 1 — Local sync persistence
-- Add versioned sync schema to disposable DB fixtures.
-- Add per-device Project sequence allocation.
-- Add atomic local contribution + durable outbox work item.
-- Add resumable sealing state.
-- Add inbox and applied ledger.
-- Add tests for rollback, crash recovery, uniqueness, and idempotency.
+
+**Implemented on feat/local-sync-persistence through commit b74d938:**
+- Version 5 sync schema and local sync metadata tables.
+- Local Device ID configuration and explicit Project sync enrolment.
+- Per-device Project sequence allocation.
+- Atomic local contribution snapshot + durable outbox work item.
+- Record-to-contribution mapping and immutable contribution reads.
+- Disposable-database tests for sequence/dependency behaviour and transaction rollback.
+
+**Remaining:**
+- Resumable sealing worker and crash recovery from pending_seal.
+- Durable persistence of the exact immutable sealed envelope before the outbox becomes ready.
+- Inbox and applied contribution ledger.
+- Tests for sealing interruption, exact-envelope retry, inbox idempotency, and acceptance transaction boundaries.
+
+The current Device ID is not a cryptographic device identity. No production key operation is part of the completed work.
 
 ### Milestone 2 — Local receiving acceptance
 - Verify test signatures and ciphertext digests.
@@ -331,9 +412,10 @@ Existing lifecycle acknowledgements relate to AI-provider context delivery, not 
 ### Milestone 3 — Authority and cryptographic identity
 - Account and Project authority interfaces.
 - Device enrolment and revocation.
-- Device key creation and protected storage.
-- Project key distribution and recovery.
-- Security review before real user data.
+- Native Android Crypto Provider adapter and authenticated IPC.
+- Android Keystore signing and key-agreement identities, with actual security-level reporting.
+- Project encryption-key creation, protected storage, distribution, rotation, and recovery.
+- Security review and cross-platform cryptographic test vectors before real user data.
 
 ### Milestone 4 — Server archive and transport
 - Authenticated upload and download.
@@ -387,9 +469,11 @@ The protocol must eventually pass tests covering:
 
 These remain open and must be settled before the relevant implementation milestone:
 
-- Canonical serialization format and exact envelope versioning.
-- Cryptographic algorithms and Android/Termux-compatible libraries.
-- Project key hierarchy, rotation, sharing, and recovery.
+- Final canonical serialization format, exact envelope versioning, signature encoding, and public-key encoding.
+- Validation of the proposed cryptographic profile against supported Android versions and independent Node/Android test vectors.
+- Android native host/companion architecture, authenticated IPC, caller identity, and adapter lifecycle.
+- Minimum production key security level; StrongBox versus TEE acceptance; explicit lower-assurance policy, if any.
+- Project-key wrapping format, key hierarchy, rotation, sharing, recovery, and loss-of-all-devices consequences.
 - Device enrolment proof and revocation evidence for offline contributions.
 - Server hosting, database, object storage, and deployment model.
 - Routing identifiers and metadata minimisation.
@@ -400,11 +484,16 @@ These remain open and must be settled before the relevant implementation milesto
 
 ## 20. Security and implementation rules
 
-- No private signing key or readable recovery secret is stored on the sync server.
+- No private signing key, private key-agreement key, raw Project key, or readable recovery secret is stored on the sync server.
+- Private device keys remain inside Android Keystore and are never returned to Node.
+- Raw Project keys are not persisted in plaintext in SQLite, ordinary files, logs, or crash reports.
 - Project plaintext and dependency relationships are not exposed to the server.
 - Device ID and Project ID are identifiers, not authority.
 - A valid signature proves origin/integrity, not factual truth or current permission.
 - The server checks current transport authority; receivers verify signature, integrity, payload and local acceptance rules.
+- The production crypto provider reports the actual key security level. Software-backed keys are never described as hardware-backed.
+- No silent downgrade of the required production key security level is permitted.
+- Test-only crypto providers and test keys cannot be used as production identities or production fallbacks.
 - No contribution is accepted partially.
 - Unknown outcomes are not treated as confirmed success.
 - No semantic merge or overwrite occurs automatically.
@@ -414,9 +503,10 @@ These remain open and must be settled before the relevant implementation milesto
 ## 21. Current status
 
 **Local continuity:** implemented and covered by the existing local test suite.  
-**Synchronisation architecture:** direction and major decisions accepted.  
-**Protocol/component design:** proposed in this document; technical details listed above remain subject to milestone gates.  
-**Distributed synchronisation:** not implemented.  
-**Production cryptography, account authority, server archive, multi-device recovery, and deletion:** not implemented.
+**Local sync persistence:** partially implemented on feat/local-sync-persistence through commit b74d938; schema v5, explicit local enrolment, device-local sequence allocation, atomic contribution/outbox creation, and immutable contribution reads are present.  
+**Milestone 1 remaining:** resumable sealing, exact sealed-envelope persistence, inbox, applied ledger, and their crash/idempotency tests.  
+**Cryptographic profile:** proposed candidates documented; final compatibility validation and approval remain outstanding.  
+**Android platform integration:** required for production device-key protection; no Android application, native adapter, or authenticated IPC implementation exists in the repository.  
+**Account authority, production cryptography, server archive/transport, multi-device recovery, portability, and distributed deletion:** not implemented.
 
-The next coding milestone is **Milestone 1: Local sync persistence**, beginning with a disposable SQLite fixture and tests. No live server, real cryptographic key management, or changes to the user's actual local database are part of that first milestone.
+The next local coding work is to complete the remaining Milestone 1 persistence work using disposable SQLite fixtures. Production cryptography must wait until Milestone 0 has finalised and reviewed the canonical format, cryptographic profile, Android native boundary, key security policy, and recovery design. No live server or changes to the user's actual local continuity database are part of this work.
