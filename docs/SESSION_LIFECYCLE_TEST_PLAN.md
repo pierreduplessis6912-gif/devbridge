@@ -99,7 +99,7 @@ Test controls should allow the same scenario to produce different outcomes on su
 | SLT-07 | SLA-07 Staleness detection | New contribution beyond another activation's handover boundary marks that activation potentially stale |
 | SLT-08 | SLA-08 Deferred refresh | Ongoing work not interrupted at marker creation; next continuation pauses; acknowledged fresh delivery required |
 | SLT-09 | SLA-09 Concurrent contributions | Reserve both Session submissions at the same current Project boundary before either commit; commit in the order that makes the second activation stale; assert both records survive with distinct provenance, reciprocal staleness facts and later-continuation gates |
-| SLT-10 | SLA-10 No semantic judgement | Overlap/contradiction does not create winner, discard records or automatic resolution |
+| SLT-10 | SLA-10 No semantic judgement | Reserve differing statements from two current Sessions; commit both; assert exact content/provenance survives, staleness markers remain factual, and no automatic relationship/conflict event/table appears; after an acknowledged refresh, assert an explicit disagreement is a new attributed contribution with only its user-specified relationship |
 | SLT-11 | SLA-11 Cross-project reference | Reference creates no activation, handover delivery or inherited access |
 | SLT-12 | SLA-12 Session end | Session ends; Project, contributions and lifecycle history remain |
 
