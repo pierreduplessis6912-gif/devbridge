@@ -963,7 +963,7 @@ test('store v2 migration assigns stable per-Project sequences and adds activatio
           { id: 'a-second-inserted', sequence: 2 },
         ],
       );
-      assert.equal(inspect.prepare('PRAGMA user_version').get().user_version, 6);
+      assert.equal(inspect.prepare('PRAGMA user_version').get().user_version, 7);
       const recordColumns = inspect.prepare('PRAGMA table_info(project_records)').all()
         .map((column) => column.name);
       assert.ok(recordColumns.includes('session_id'));
