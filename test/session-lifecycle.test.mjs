@@ -231,8 +231,8 @@ test('SLA-01: initial activation requires project confirmation and acknowledged 
       inspect.close();
     }
 
-    await assert.rejects(
-      lifecycle.requestProjectActivation({
+    assert.throws(
+      () => lifecycle.requestProjectActivation({
         sessionId: 'session-1',
         projectId: 'project-a',
         requestId: 'request-duplicate',
@@ -529,8 +529,8 @@ test('overlapping activation requests are serialized across lifecycle handles', 
       /Delivery intent already exists; automatic retry is prohibited/,
     );
 
-    await assert.rejects(
-      secondLifecycle.requestProjectActivation({
+    assert.throws(
+      () => secondLifecycle.requestProjectActivation({
         sessionId: 'session-overlap',
         projectId: 'project-overlap',
         requestId: 'request-overlap-2',
