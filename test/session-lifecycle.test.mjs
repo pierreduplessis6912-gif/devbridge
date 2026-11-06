@@ -227,7 +227,181 @@ test('SLA-03: returning B to A creates a fresh A activation and handover', async
     rmSync(directory, { recursive: true, force: true });
   }
 });
-test.todo('SLA-05: failed transition preserves the outgoing checkpoint and all history');
+test('SLA-05: failed switch preserves the checkpoint and recovery creates a fresh activation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-failed-switch-recovery-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const lifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const provider = createSimulatedProvider({
+    outcomes: ['acknowledged', 'failed', 'acknowledged'],
+  });
+
+  const confirm = async (requestId, projectId) => lifecycle.confirmProjectActivation({
+    requestId,
+    confirmationToken: authority.issue({
+      requestId, sessionId: 'session-failed-switch', projectId,
+    }),
+  });
+  const activate = (requestId) => lifecycle.activateProject({
+    requestId, providerAdapter: provider,
+  });
+
+  try {
+    store.createProject({ id: 'project-failed-a', name: 'Project A' });
+    store.createProject({ id: 'project-failed-b', name: 'Project B' });
+    store.appendRecord({
+      id: 'failed-a-record-1', projectId: 'project-failed-a',
+      category: 'requirement', content: 'Original A context.',
+      originType: 'user',
+    });
+    store.appendRecord({
+      id: 'failed-b-record-1', projectId: 'project-failed-b',
+      category: 'requirement', content: 'B context.',
+      originType: 'user',
+    });
+    lifecycle.createSession({
+      id: 'session-failed-switch', providerName: 'simulated-provider',
+    });
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-failed-switch',
+      projectId: 'project-failed-a',
+      requestId: 'request-failed-a-first',
+    });
+    await confirm('request-failed-a-first', 'project-failed-a');
+    const firstA = await activate('request-failed-a-first');
+    assert.equal(firstA.status, 'active');
+
+    store.appendRecord({
+      id: 'failed-a-record-2', projectId: 'project-failed-a',
+      category: 'decision', content: 'A history recorded before checkpoint.',
+      originType: 'user',
+    });
+    const aBoundaryBeforeSwitch = store.getProjectHistoryBoundary('project-failed-a');
+
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-failed-switch',
+      projectId: 'project-failed-b',
+      requestId: 'request-failed-b',
+    });
+    await confirm('request-failed-b', 'project-failed-b');
+    const checkpoint = lifecycle.checkpointActiveActivation({
+      requestId: 'request-failed-b',
+    });
+    assert.equal(checkpoint.outgoingActivationId, firstA.activation.id);
+    assert.equal(checkpoint.projectEventSequence, aBoundaryBeforeSwitch.eventSequence);
+    assert.equal(checkpoint.projectRecordCount, 2);
+    assert.equal(lifecycle.getActiveActivation('session-failed-switch'), null);
+
+    const failedB = await activate('request-failed-b');
+    assert.equal(failedB.status, 'blocked');
+    assert.equal(failedB.reason, 'failed');
+    assert.equal(failedB.activation, null);
+    assert.equal(lifecycle.getActiveActivation('session-failed-switch'), null);
+    assert.deepEqual(
+      lifecycle.listActivations('session-failed-switch').map((item) => item.projectId),
+      ['project-failed-a'],
+    );
+    assert.deepEqual(
+      lifecycle.listDeliveryAttempts('session-failed-switch').map((item) => item.outcome),
+      ['acknowledged', 'failed'],
+    );
+    assert.deepEqual(lifecycle.listCheckpoints('session-failed-switch'), [checkpoint]);
+
+    const eventsAfterFailure = lifecycle.listEvents('session-failed-switch');
+    assert.ok(eventsAfterFailure.some((event) =>
+      event.eventType === 'activation_ended'
+      && event.activationId === firstA.activation.id
+      && event.checkpointId === checkpoint.id));
+    assert.ok(eventsAfterFailure.some((event) =>
+      event.eventType === 'delivery_failed'
+      && event.activationRequestId === 'request-failed-b'));
+    assert.equal(eventsAfterFailure.some((event) =>
+      event.eventType === 'project_activated'
+      && event.activationRequestId === 'request-failed-b'), false);
+
+    // Recovery is a new, explicitly confirmed activation of A, not a rollback
+    // of the ended A activation and not a retry of the failed B delivery.
+    lifecycle.requestProjectActivation({
+      sessionId: 'session-failed-switch',
+      projectId: 'project-failed-a',
+      requestId: 'request-failed-a-recovery',
+    });
+    await confirm('request-failed-a-recovery', 'project-failed-a');
+    const recoveredA = await activate('request-failed-a-recovery');
+    assert.equal(recoveredA.status, 'active');
+    assert.notEqual(recoveredA.activation.id, firstA.activation.id);
+    assert.notEqual(recoveredA.handoverId, firstA.handoverId);
+    assert.equal(lifecycle.getActiveActivation('session-failed-switch').id,
+      recoveredA.activation.id);
+    assert.equal(lifecycle.getActiveActivation('session-failed-switch').projectId,
+      'project-failed-a');
+
+    const activations = lifecycle.listActivations('session-failed-switch');
+    assert.deepEqual(activations.map((item) => item.projectId), [
+      'project-failed-a', 'project-failed-a',
+    ]);
+    assert.notEqual(activations[0].id, activations[1].id);
+    assert.notEqual(activations[0].handoverSnapshotId, activations[1].handoverSnapshotId);
+
+    const attempts = lifecycle.listDeliveryAttempts('session-failed-switch');
+    assert.deepEqual(attempts.map((item) => item.outcome), [
+      'acknowledged', 'failed', 'acknowledged',
+    ]);
+    assert.notEqual(attempts[1].deliveryId, attempts[2].deliveryId);
+    assert.equal(attempts[1].activationRequestId, 'request-failed-b');
+    assert.equal(attempts[2].activationRequestId, 'request-failed-a-recovery');
+    assert.deepEqual(lifecycle.listCheckpoints('session-failed-switch'), [checkpoint]);
+
+    const inspect = new DatabaseSync(databasePath);
+    try {
+      const snapshots = inspect.prepare(`
+        SELECT id, payload_json AS payloadJson
+        FROM handover_snapshots
+        WHERE activation_request_id = ?
+      `);
+      const originalA = snapshots.get('request-failed-a-first');
+      const recoveryA = snapshots.get('request-failed-a-recovery');
+      assert.equal(originalA.id, firstA.handoverId);
+      assert.equal(recoveryA.id, recoveredA.handoverId);
+      assert.equal(
+        JSON.parse(originalA.payloadJson).records
+          .some((record) => record.id === 'failed-a-record-2'),
+        false,
+      );
+      assert.equal(
+        JSON.parse(recoveryA.payloadJson).records
+          .some((record) => record.id === 'failed-a-record-2'),
+        true,
+      );
+      assert.equal(
+        inspect.prepare('SELECT COUNT(*) AS count FROM handover_snapshots WHERE activation_request_id = ?')
+          .get('request-failed-a-first').count,
+        1,
+      );
+      assert.equal(
+        inspect.prepare('SELECT COUNT(*) AS count FROM project_activations WHERE project_id = ?')
+          .get('project-failed-b').count,
+        0,
+      );
+      assert.throws(
+        () => inspect.prepare(
+          "UPDATE context_delivery_attempts SET outcome = 'acknowledged' WHERE activation_request_id = ?",
+        ).run('request-failed-b'),
+        /append-only/,
+      );
+    } finally {
+      inspect.close();
+    }
+
+    assert.deepEqual(lifecycle.listCheckpoints('session-failed-switch'), [checkpoint]);
+  } finally {
+    lifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 test.todo('SLA-06: contributions use the active Project Activation');
 test.todo('SLA-07: a newer contribution marks another active activation potentially stale');
 test.todo('SLA-08: a stale activation refreshes before its next continuation');
