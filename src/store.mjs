@@ -66,7 +66,7 @@ export function openStore(databasePath) {
     db.exec('PRAGMA synchronous = FULL');
 
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 3) {
+    if (version > 4) {
       throw new Error(`Database schema version ${version} is newer than this application supports`);
     }
 
@@ -229,6 +229,20 @@ export function openStore(databasePath) {
         `);
       });
     }
+
+    // Version 4 adds optional, immutable Session/Activation attribution to Project records.
+    if (version < 4) {
+      withTransaction(db, () => {
+        db.exec(`
+          ALTER TABLE project_records ADD COLUMN session_id TEXT;
+          ALTER TABLE project_records ADD COLUMN activation_id TEXT;
+          ALTER TABLE project_records ADD COLUMN handover_snapshot_id TEXT;
+          CREATE INDEX project_records_activation
+            ON project_records(session_id, activation_id);
+          PRAGMA user_version = 4;
+        `);
+      });
+    }
   } catch (error) {
     db.close();
     throw error;
@@ -291,6 +305,9 @@ export function openStore(databasePath) {
       statusText = null,
       relatedRecords = [],
       recordedAt = new Date().toISOString(),
+      sessionId = null,
+      activationId = null,
+      handoverSnapshotId = null,
     }) {
       ensureOpen();
       const recordId = requiredText(id, 'id');
@@ -310,6 +327,13 @@ export function openStore(databasePath) {
       const label = optionalText(originLabel, 'originLabel');
       const ref = optionalText(sourceRef, 'sourceRef');
       const status = optionalText(statusText, 'statusText');
+      const session = optionalText(sessionId, 'sessionId');
+      const activation = optionalText(activationId, 'activationId');
+      const handover = optionalText(handoverSnapshotId, 'handoverSnapshotId');
+      if ([session, activation, handover].some(Boolean)
+        && ![session, activation, handover].every(Boolean)) {
+        throw new TypeError('sessionId, activationId and handoverSnapshotId must be supplied together');
+      }
       const links = relatedRecords.map((link) => {
         if (!link || typeof link !== 'object') throw new TypeError('Each related record must be an object');
         const targetId = requiredText(link.recordId, 'relatedRecords.recordId');
@@ -328,9 +352,13 @@ export function openStore(databasePath) {
 
         db.prepare(`
           INSERT INTO project_records
-            (id, project_id, category, content, origin_type, origin_label, source_ref, status_text, recorded_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(recordId, project, recordCategory, recordContent, originType, label, ref, status, timestamp);
+            (id, project_id, category, content, origin_type, origin_label, source_ref,
+             status_text, recorded_at, session_id, activation_id, handover_snapshot_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          recordId, project, recordCategory, recordContent, originType, label, ref,
+          status, timestamp, session, activation, handover,
+        );
 
         const insertLink = db.prepare(`
           INSERT INTO record_links
@@ -386,7 +414,9 @@ export function openStore(databasePath) {
       return db.prepare(`
         SELECT id, project_id AS projectId, category, content,
           origin_type AS originType, origin_label AS originLabel,
-          source_ref AS sourceRef, status_text AS statusText, recorded_at AS recordedAt
+          source_ref AS sourceRef, status_text AS statusText, recorded_at AS recordedAt,
+          session_id AS sessionId, activation_id AS activationId,
+          handover_snapshot_id AS handoverSnapshotId
         FROM project_records WHERE id = ?
       `).get(id) ?? null;
     },
@@ -400,7 +430,9 @@ export function openStore(databasePath) {
         ? db.prepare(`
             SELECT id, project_id AS projectId, category, content,
               origin_type AS originType, origin_label AS originLabel,
-              source_ref AS sourceRef, status_text AS statusText, recorded_at AS recordedAt
+              source_ref AS sourceRef, status_text AS statusText, recorded_at AS recordedAt,
+              session_id AS sessionId, activation_id AS activationId,
+              handover_snapshot_id AS handoverSnapshotId
             FROM project_records
             WHERE project_id = ? AND recorded_at < ?
             ORDER BY recorded_at DESC, id DESC LIMIT ?
@@ -408,7 +440,9 @@ export function openStore(databasePath) {
         : db.prepare(`
             SELECT id, project_id AS projectId, category, content,
               origin_type AS originType, origin_label AS originLabel,
-              source_ref AS sourceRef, status_text AS statusText, recorded_at AS recordedAt
+              source_ref AS sourceRef, status_text AS statusText, recorded_at AS recordedAt,
+              session_id AS sessionId, activation_id AS activationId,
+              handover_snapshot_id AS handoverSnapshotId
             FROM project_records
             WHERE project_id = ?
             ORDER BY recorded_at DESC, id DESC LIMIT ?
