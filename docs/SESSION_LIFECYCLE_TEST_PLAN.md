@@ -251,3 +251,18 @@ A green test suite proves only the behaviours it exercises. It does not prove re
 ---
 
 **Test principle:** Prove DevBridge's lifecycle rules with a deterministic adapter before depending on a real provider.
+
+
+### SLA-09 Termux verification
+
+Verified locally by the user on Android/Termux with Node.js v26.3.1 after pulling commit `1181ae7` (SLA-09 implementation and acceptance/test-plan updates):
+
+- Tests: 41
+- Passed: 35
+- Failed: 0
+- Cancelled: 0
+- Skipped: 0
+- TODO placeholders: 6
+- Duration: 1467.187292 ms
+
+The dedicated test `SLA-09: overlapping Session submissions are both retained with distinct attribution` passed. The six TODO entries are acceptance-plan placeholders, not failed or skipped tests. This verifies the implemented overlapping-submission scenario in the local SQLite test environment; it does not establish multi-process production concurrency or provider integration behaviour.
