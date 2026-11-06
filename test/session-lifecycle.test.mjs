@@ -465,6 +465,70 @@ test('SLT-21: provider acceptance followed by process death is never automatical
 });
 
 
+
+test('store v3 migration assigns stable per-Project sequences to existing events', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-store-v3-migration-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const legacy = new DatabaseSync(databasePath);
+
+  try {
+    legacy.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+      CREATE TABLE project_records (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id)
+      ) STRICT;
+      CREATE TABLE project_events (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        occurred_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TRIGGER project_events_no_update
+      BEFORE UPDATE ON project_events
+      BEGIN SELECT RAISE(ABORT, 'project events are append-only'); END;
+      CREATE TRIGGER project_events_no_delete
+      BEFORE DELETE ON project_events
+      BEGIN SELECT RAISE(ABORT, 'project events are append-only'); END;
+      INSERT INTO projects (id) VALUES ('legacy-project');
+      INSERT INTO project_events (id, project_id, occurred_at)
+        VALUES ('z-first-inserted', 'legacy-project', '2026-01-01T00:00:00.000Z');
+      INSERT INTO project_events (id, project_id, occurred_at)
+        VALUES ('a-second-inserted', 'legacy-project', '2026-01-01T00:00:00.000Z');
+      PRAGMA user_version = 2;
+    `);
+  } finally {
+    legacy.close();
+  }
+
+  const store = openStore(databasePath);
+  try {
+    const boundary = store.getProjectHistoryBoundary('legacy-project');
+    assert.equal(boundary.eventSequence, 2);
+    assert.equal(boundary.eventCount, 2);
+    assert.equal(boundary.recordCount, 0);
+    assert.equal(boundary.lastEventId, 'a-second-inserted');
+
+    const inspect = new DatabaseSync(databasePath);
+    try {
+      assert.deepEqual(
+        inspect.prepare('SELECT id, event_sequence AS sequence FROM project_events ORDER BY event_sequence')
+          .all().map((row) => ({ ...row })),
+        [
+          { id: 'z-first-inserted', sequence: 1 },
+          { id: 'a-second-inserted', sequence: 2 },
+        ],
+      );
+      assert.equal(inspect.prepare('PRAGMA user_version').get().user_version, 3);
+    } finally {
+      inspect.close();
+    }
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('SLT-23: outgoing checkpoint captures a durable Project history boundary and ends only its activation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-checkpoint-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
