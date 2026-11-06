@@ -573,7 +573,7 @@ export function openStore(databasePath) {
     listSyncOutbox({ projectId = null } = {}) {
       ensureOpen();
       const project = optionalText(projectId, 'projectId');
-      const sql = 'SELECT o.contribution_id AS contributionId, c.project_id AS projectId, c.origin_device_id AS originDeviceId, c.device_project_sequence AS deviceProjectSequence, c.created_at AS createdAt, o.state, o.attempts, o.next_attempt_at AS nextAttemptAt, o.last_error_code AS lastErrorCode, o.server_received_at AS serverReceivedAt FROM sync_outbox o JOIN sync_contributions c ON c.contribution_id = o.contribution_id ' + (project ? 'WHERE c.project_id = ? ' : '') + 'ORDER BY c.created_at, c.contribution_id';
+      const sql = 'SELECT o.contribution_id AS contributionId, c.project_id AS projectId, c.origin_device_id AS originDeviceId, c.device_project_sequence AS deviceProjectSequence, c.created_at AS createdAt, o.state, o.attempts, o.next_attempt_at AS nextAttemptAt, o.last_error_code AS lastErrorCode, o.server_received_at AS serverReceivedAt FROM sync_outbox o JOIN sync_contributions c ON c.contribution_id = o.contribution_id ' + (project ? 'WHERE c.project_id = ? ' : '') + 'ORDER BY c.project_id, c.origin_device_id, c.device_project_sequence, c.contribution_id';
       return project ? db.prepare(sql).all(project) : db.prepare(sql).all();
     },
 
