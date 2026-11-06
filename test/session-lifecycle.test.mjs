@@ -206,10 +206,15 @@ test('SLA-02: switching A to B checkpoints A and activates B only after delivery
       lifecycle.listActivations('session-switch').map((item) => item.projectId),
       ['switch-project-a'],
     );
+    const attemptsWhilePending = lifecycle.listDeliveryAttempts('session-switch');
     assert.deepEqual(
-      lifecycle.listDeliveryAttempts('session-switch').map((item) => item.outcome),
-      ['acknowledged'],
+      attemptsWhilePending.map((item) => item.outcome),
+      ['acknowledged', 'unknown'],
     );
+    assert.equal(attemptsWhilePending[1].activationRequestId, 'request-switch-b');
+    assert.equal(attemptsWhilePending[1].handoverSnapshotId, capturedDelivery.handover.id);
+    assert.equal(attemptsWhilePending[1].unresolved, 1);
+    assert.equal(attemptsWhilePending[1].id, null);
     assert.deepEqual(lifecycle.listCheckpoints('session-switch'), [checkpoint]);
 
     resolveDelivery({
