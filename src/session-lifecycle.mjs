@@ -1239,7 +1239,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       }
       const staleMarkers = this.listUnaddressedStalenessMarkers(session);
       if (staleMarkers.length) {
-        const error = new Error('Stale Project context must be refreshed before continuation');
+        const error = new Error('stale Project context must be refreshed before continuation');
         error.code = 'STALE_CONTEXT_REFRESH_REQUIRED';
         error.stalenessMarkers = staleMarkers;
         throw error;
