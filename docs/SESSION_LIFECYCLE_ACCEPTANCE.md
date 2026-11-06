@@ -156,7 +156,10 @@ Every acceptance scenario must preserve these rules:
 - A's checkpoint remains available and unchanged.
 - All A contributions and events remain intact.
 - B's failed/unknown transition history remains visible.
-- Retrying B does not overwrite the original failed/unknown attempt or create duplicate A contributions.
+- The outgoing A activation remains ended; DevBridge does not silently reactivate it or pretend the switch never happened.
+- Recovery to A requires a new, explicitly confirmed A activation, a fresh A handover and a separately acknowledged delivery.
+- The original A checkpoint, activation, handover and B delivery attempt remain unchanged and historically identifiable.
+- Any later retry or recovery appends history; it does not overwrite the original failed/unknown attempt or create duplicate A contributions.
 
 ### SLA-06 — Contributions use the active Project Activation
 
