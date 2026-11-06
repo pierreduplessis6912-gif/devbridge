@@ -154,6 +154,20 @@ Assert that:
 
 Exercise the injected confirmation-authority boundary with the test-only simulated authority. Verify that forged tokens, mismatched request/session/project scope, and repeated confirmation are rejected; confirmation evidence is stored separately and append-only; activation cannot proceed without a verified confirmation; and the authenticated actor/method/reference are preserved. This test authority is not production authentication.
 
+### SLT-23 — Durable outgoing checkpoint boundary
+
+Activate Project A, record additional A history, confirm a switch request to Project B, and checkpoint A before attempting B delivery.
+
+Assert that:
+- The checkpoint identifies the exact outgoing activation, Project A and its original handover.
+- The checkpoint is bound to the exact confirmed incoming request for Project B.
+- The Project event sequence, final event identifier/time and record/event counts describe one consistent history boundary.
+- The Session lifecycle sequence identifies the last event before checkpoint creation.
+- The checkpoint, activation_checkpointed event and activation_ended event commit atomically and reference one another.
+- The outgoing activation is no longer active after checkpointing.
+- Later Project A contributions receive a higher event sequence and do not alter the checkpoint.
+- Checkpoint update/delete attempts are rejected.
+- A delivery attempt for Project B cannot begin before checkpointing, and can proceed after the checkpoint is committed.
 ### SLT-17 — Staleness boundary correctness
 
 Create multiple activations at different project-history boundaries. Add a contribution and verify only eligible older active activations are marked potentially stale.
@@ -198,9 +212,9 @@ Assert that no partial active activation, orphan handover association, dangling 
 
 ### Gate 2 — Initial lifecycle implementation
 
-**Implemented, pending execution of the test suite:** initial activation, injected confirmation authority, append-only confirmation evidence, durable delivery intents, stable delivery identifiers, acknowledgement validation and fail-closed unknown handling.
+**Implemented, pending execution of the test suite:** initial activation, injected confirmation authority, append-only confirmation evidence, durable delivery intents, stable delivery identifiers, acknowledgement validation, fail-closed unknown handling, per-Project event sequencing and immutable outgoing checkpoint creation.
 
-This is not the complete Session Lifecycle. Project switching, contribution attribution, stale-context refresh, session ending and several integrity scenarios remain unimplemented.
+This is not the complete Session Lifecycle. The checkpoint foundation is implemented, but complete A → B → A switching, failed-switch recovery, contribution attribution, stale-context refresh, session ending and several integrity scenarios remain unimplemented.
 
 ### Gate 3 — Recovery and hardening
 
