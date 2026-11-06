@@ -582,9 +582,8 @@ export function openStore(databasePath) {
       const id = requiredText(contributionId, 'contributionId');
       const row = db.prepare('SELECT contribution_id AS contributionId, project_id AS projectId, origin_device_id AS originDeviceId, device_project_sequence AS deviceProjectSequence, created_at AS createdAt, protocol_version AS protocolVersion, schema_version AS schemaVersion, payload_json AS payloadJson, state FROM sync_contributions WHERE contribution_id = ?').get(id);
       if (!row) return null;
-      const payload = JSON.parse(row.payloadJson);
-      delete row.payloadJson;
-      return { ...row, payload };
+      const { payloadJson, ...metadata } = row;
+      return { ...metadata, payload: JSON.parse(payloadJson) };
     },
 
     getProjectHistoryBoundary(projectId) {
