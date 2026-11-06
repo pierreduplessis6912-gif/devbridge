@@ -214,7 +214,7 @@ Assert that no partial active activation, orphan handover association, dangling 
 
 **Implemented, pending execution of the test suite:** initial activation, injected confirmation authority, append-only confirmation evidence, durable delivery intents, stable delivery identifiers, acknowledgement validation, fail-closed unknown handling, per-Project event sequencing and immutable outgoing checkpoint creation.
 
-This is not the complete Session Lifecycle. The checkpoint foundation and an A → B → A return-path acceptance test are implemented, with the return-path test pending execution in Termux. Failed-switch recovery, contribution attribution, stale-context refresh, session ending and several integrity scenarios remain unimplemented.
+This is not the complete Session Lifecycle. The checkpoint foundation and A → B → A return-path acceptance test are implemented; the return-path test passed in Termux (25 passed, 0 failed, 9 TODO at commit f9de3eb). The failed-switch recovery acceptance test has now been added and awaits execution in Termux. Contribution attribution, stale-context refresh, session ending and several integrity scenarios remain unimplemented.
 
 ### Gate 3 — Recovery and hardening
 
