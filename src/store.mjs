@@ -397,6 +397,8 @@ export function openStore(databasePath) {
         if (targetId === recordId) throw new TypeError('A record cannot link to itself');
         return { targetId, relationship };
       });
+      const linkRows = links.map((link) => ({ ...link, id: randomUUID() }));
+      const eventId = randomUUID();
 
       withTransaction(db, () => {
         if (!db.prepare('SELECT 1 FROM projects WHERE id = ?').get(project)) {
@@ -418,14 +420,14 @@ export function openStore(databasePath) {
             (id, project_id, from_record_id, to_record_id, relationship, created_at)
           VALUES (?, ?, ?, ?, ?, ?)
         `);
-        for (const link of links) {
+        for (const link of linkRows) {
           const target = db.prepare(`
             SELECT project_id FROM project_records WHERE id = ?
           `).get(link.targetId);
           if (!target || target.project_id !== project) {
             throw new Error(`Related record does not exist in this project: ${link.targetId}`);
           }
-          insertLink.run(randomUUID(), project, recordId, link.targetId, link.relationship, timestamp);
+          insertLink.run(link.id, project, recordId, link.targetId, link.relationship, timestamp);
         }
 
         db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(timestamp, project);
@@ -436,7 +438,89 @@ export function openStore(databasePath) {
           INSERT INTO project_events
             (id, project_id, event_type, actor_type, actor_label, record_id, summary, occurred_at, event_sequence)
           VALUES (?, ?, 'record_added', ?, ?, ?, ?, ?, ?)
-        `).run(randomUUID(), project, originType, label, recordId, `Recorded ${recordCategory}`, timestamp, eventSequence);
+        `).run(eventId, project, originType, label, recordId, `Recorded ${recordCategory}`, timestamp, eventSequence);
+
+        const enrollment = db.prepare(
+          "SELECT project_id FROM sync_project_enrolments WHERE project_id = ? AND status = 'enabled'",
+        ).get(project);
+
+        if (enrollment) {
+          const localDevice = db.prepare(
+            'SELECT device_id AS deviceId FROM sync_local_device WHERE singleton_id = 1',
+          ).get();
+          if (!localDevice) throw new Error('Local sync device is not configured');
+
+          const prior = db.prepare(
+            'SELECT last_sequence AS lastSequence FROM sync_project_device_sequences WHERE project_id = ? AND device_id = ?',
+          ).get(project, localDevice.deviceId);
+          const deviceSequence = (prior?.lastSequence ?? 0) + 1;
+
+          if (prior) {
+            db.prepare('UPDATE sync_project_device_sequences SET last_sequence = ? WHERE project_id = ? AND device_id = ?')
+              .run(deviceSequence, project, localDevice.deviceId);
+          } else {
+            db.prepare('INSERT INTO sync_project_device_sequences (project_id, device_id, last_sequence) VALUES (?, ?, ?)')
+              .run(project, localDevice.deviceId, deviceSequence);
+          }
+
+          const dependencyIds = [];
+          for (const link of linkRows) {
+            const owner = db.prepare(
+              'SELECT contribution_id AS contributionId FROM sync_record_contributions WHERE record_id = ?',
+            ).get(link.targetId);
+            if (!owner) {
+              throw new Error('Cannot sync a relationship to a record outside synchronised contribution history: ' + link.targetId);
+            }
+            if (!dependencyIds.includes(owner.contributionId)) dependencyIds.push(owner.contributionId);
+          }
+
+          const contributionId = randomUUID();
+          const eventRows = deviceSequence === 1
+            ? db.prepare(
+                'SELECT id, project_id AS projectId, event_type AS eventType, actor_type AS actorType, actor_label AS actorLabel, record_id AS recordId, summary, occurred_at AS occurredAt, event_sequence AS eventSequence FROM project_events WHERE project_id = ? AND event_sequence IN (1, ?) ORDER BY event_sequence',
+              ).all(project, eventSequence)
+            : [db.prepare(
+                'SELECT id, project_id AS projectId, event_type AS eventType, actor_type AS actorType, actor_label AS actorLabel, record_id AS recordId, summary, occurred_at AS occurredAt, event_sequence AS eventSequence FROM project_events WHERE id = ?',
+              ).get(eventId)];
+
+          const payload = {
+            format: 'devbridge-sync-contribution-v1',
+            contributionId,
+            projectId: project,
+            originDeviceId: localDevice.deviceId,
+            deviceProjectSequence: deviceSequence,
+            createdAt: timestamp,
+            protocolVersion: 1,
+            schemaVersion: 1,
+            dependencies: dependencyIds,
+            project: db.prepare(
+              'SELECT id, name, purpose, created_at AS createdAt FROM projects WHERE id = ?',
+            ).get(project),
+            records: [{
+              id: recordId, projectId: project, category: recordCategory,
+              content: recordContent, originType, originLabel: label,
+              sourceRef: ref, statusText: status, recordedAt: timestamp,
+              sessionId: session, activationId: activation,
+              handoverSnapshotId: handover,
+            }],
+            links: linkRows.map((link) => ({
+              id: link.id, projectId: project, fromRecordId: recordId,
+              toRecordId: link.targetId, relationship: link.relationship,
+              createdAt: timestamp,
+            })),
+            events: eventRows,
+          };
+
+          db.prepare(
+            "INSERT INTO sync_contributions (contribution_id, project_id, origin_device_id, device_project_sequence, created_at, protocol_version, schema_version, payload_json, state) VALUES (?, ?, ?, ?, ?, 1, 1, ?, 'pending_seal')",
+          ).run(contributionId, project, localDevice.deviceId, deviceSequence, timestamp, JSON.stringify(payload));
+          db.prepare(
+            "INSERT INTO sync_outbox (contribution_id, state, attempts, created_at, updated_at) VALUES (?, 'pending_seal', 0, ?, ?)",
+          ).run(contributionId, timestamp, timestamp);
+          db.prepare(
+            'INSERT INTO sync_record_contributions (record_id, contribution_id) VALUES (?, ?)',
+          ).run(recordId, contributionId);
+        }
       });
 
       return this.getRecord(recordId);
