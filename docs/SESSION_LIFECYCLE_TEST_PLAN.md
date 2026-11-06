@@ -290,3 +290,20 @@ The six TODO entries are remaining acceptance placeholders, not failed or skippe
 The branch now contains `src/cross-project-references.mjs` and a dedicated SLA-11 test. Cross-Project references are stored separately from within-Project record relationships, contain only source/target Project IDs plus an optional user-supplied label and timestamp, and are append-only. The reference API does not fetch target Project metadata or records, build a target handover, invoke a provider adapter, create an activation or change permissions. The test exercises a Session active on Project A, records an explicit reference to Project B, and checks that A remains active, no B activation/delivery appears, and A's handover contains no B record content.
 
 **Security limitation:** this is a data-separation boundary only. The current v1 store still exposes direct Project lookup and handover APIs by ID and does not yet implement user/account-level Project authorization. Therefore this test does not prove that an unauthorized caller cannot independently read Project B. A trusted authentication and authorization boundary must be designed and tested separately before multi-user or untrusted-client exposure.
+
+### SLA-11 Termux verification
+
+Verified locally by the user on Android/Termux with Node.js v26.3.1 after pulling commit `83e07dc`:
+
+- Command: `npm test`
+- Tests: 43
+- Passed: 37
+- Failed: 0
+- Cancelled: 0
+- Skipped: 0
+- TODO placeholders: 6
+- Duration: 1747.068593 ms
+
+The dedicated test `SLA-11: a Cross-Project reference does not activate or disclose the referenced Project` passed. It verifies that creating an explicit A → B reference leaves A active, creates no B activation or provider delivery, does not place B records or private content in A's handover, and preserves append-only reference history.
+
+This is evidence for reference/data isolation only. It does not establish user/account-level authorization: the current store still exposes Project lookup and handover operations by ID, and a trusted authorization boundary remains a separate requirement. The six TODO entries are remaining acceptance placeholders, not failed or skipped tests. This run does not establish production readiness or real-provider behaviour.
