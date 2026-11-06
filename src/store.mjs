@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 export const RECORD_CATEGORIES = Object.freeze([
@@ -66,7 +66,7 @@ export function openStore(databasePath) {
     db.exec('PRAGMA synchronous = FULL');
 
     const version = db.prepare('PRAGMA user_version').get().user_version;
-    if (version > 5) {
+    if (version > 6) {
       throw new Error(`Database schema version ${version} is newer than this application supports`);
     }
 
@@ -293,6 +293,43 @@ export function openStore(databasePath) {
           CREATE INDEX sync_contributions_project_sequence ON sync_contributions(project_id, origin_device_id, device_project_sequence);
           CREATE INDEX sync_outbox_state_created ON sync_outbox(state, created_at, contribution_id);
           PRAGMA user_version = 5;
+        `);
+      });
+    }
+
+    // Version 6 adds durable incoming envelope receipts and an applied-contribution ledger.
+    if (version < 6) {
+      withTransaction(db, () => {
+        db.exec(`
+          CREATE TABLE sync_inbox (
+            receipt_id TEXT PRIMARY KEY,
+            contribution_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            origin_device_id TEXT NOT NULL,
+            device_project_sequence INTEGER NOT NULL CHECK (device_project_sequence > 0),
+            envelope TEXT NOT NULL,
+            envelope_sha256 TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('received', 'pending', 'applied', 'quarantined')),
+            received_at TEXT NOT NULL,
+            last_error_code TEXT
+          ) STRICT;
+          CREATE INDEX sync_inbox_contribution
+            ON sync_inbox(contribution_id, received_at, receipt_id);
+          CREATE INDEX sync_inbox_origin_sequence
+            ON sync_inbox(project_id, origin_device_id, device_project_sequence);
+          CREATE INDEX sync_inbox_state_received
+            ON sync_inbox(state, received_at, receipt_id);
+
+          CREATE TABLE sync_applied_contributions (
+            contribution_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            origin_device_id TEXT NOT NULL,
+            device_project_sequence INTEGER NOT NULL CHECK (device_project_sequence > 0),
+            envelope_sha256 TEXT NOT NULL,
+            applied_at TEXT NOT NULL,
+            UNIQUE (project_id, origin_device_id, device_project_sequence)
+          ) STRICT;
+          PRAGMA user_version = 6;
         `);
       });
     }
@@ -586,6 +623,187 @@ export function openStore(databasePath) {
       if (!row) return null;
       const { payloadJson, ...metadata } = row;
       return { ...metadata, payload: JSON.parse(payloadJson) };
+    },
+
+
+    receiveSyncEnvelope({
+      contributionId,
+      projectId,
+      originDeviceId,
+      deviceProjectSequence,
+      envelope,
+      receivedAt = new Date().toISOString(),
+    }) {
+      ensureOpen();
+      const id = requiredText(contributionId, 'contributionId');
+      const project = requiredText(projectId, 'projectId');
+      const origin = requiredText(originDeviceId, 'originDeviceId');
+      const sequence = positiveInteger(deviceProjectSequence, 'deviceProjectSequence');
+      if (typeof envelope !== 'string' || envelope.length === 0) {
+        throw new TypeError('envelope must be a non-empty string');
+      }
+      const timestamp = requiredText(receivedAt, 'receivedAt');
+      const digest = createHash('sha256').update(envelope, 'utf8').digest('hex');
+
+      return withTransaction(db, () => {
+        const sameId = db.prepare(`
+          SELECT receipt_id AS receiptId, contribution_id AS contributionId,
+            project_id AS projectId, origin_device_id AS originDeviceId,
+            device_project_sequence AS deviceProjectSequence,
+            envelope_sha256 AS envelopeSha256, state
+          FROM sync_inbox WHERE contribution_id = ?
+          ORDER BY received_at, receipt_id
+        `).all(id);
+        const appliedById = db.prepare(`
+          SELECT contribution_id AS contributionId, project_id AS projectId,
+            origin_device_id AS originDeviceId,
+            device_project_sequence AS deviceProjectSequence,
+            envelope_sha256 AS envelopeSha256, applied_at AS appliedAt
+          FROM sync_applied_contributions WHERE contribution_id = ?
+        `).get(id);
+        const sameSequenceInbox = db.prepare(`
+          SELECT receipt_id AS receiptId, contribution_id AS contributionId, state
+          FROM sync_inbox
+          WHERE project_id = ? AND origin_device_id = ?
+            AND device_project_sequence = ? AND contribution_id <> ?
+        `).all(project, origin, sequence, id);
+        const appliedBySequence = db.prepare(`
+          SELECT contribution_id AS contributionId, envelope_sha256 AS envelopeSha256
+          FROM sync_applied_contributions
+          WHERE project_id = ? AND origin_device_id = ?
+            AND device_project_sequence = ?
+        `).get(project, origin, sequence);
+
+        const sameMetadata = (row) => row.projectId === project
+          && row.originDeviceId === origin
+          && row.deviceProjectSequence === sequence;
+        const exactReceipt = sameId.find((row) => row.envelopeSha256 === digest && sameMetadata(row));
+        if (exactReceipt) {
+          return {
+            receiptId: exactReceipt.receiptId,
+            contributionId: id,
+            envelopeSha256: digest,
+            state: exactReceipt.state,
+            duplicate: true,
+            integrityConflict: false,
+          };
+        }
+        if (appliedById
+          && appliedById.envelopeSha256 === digest
+          && sameMetadata(appliedById)) {
+          return {
+            receiptId: null,
+            contributionId: id,
+            envelopeSha256: digest,
+            state: 'applied',
+            duplicate: true,
+            integrityConflict: false,
+          };
+        }
+
+        const identityConflict = sameId.length > 0 || Boolean(appliedById);
+        const sequenceConflict = sameSequenceInbox.length > 0
+          || (appliedBySequence && appliedBySequence.contributionId !== id);
+        const integrityConflict = identityConflict || sequenceConflict;
+        const errorCode = identityConflict
+          ? 'contribution_identity_conflict'
+          : sequenceConflict ? 'origin_sequence_conflict' : null;
+        const receiptId = randomUUID();
+        const state = integrityConflict ? 'quarantined' : 'received';
+
+        db.prepare(`
+          INSERT INTO sync_inbox
+            (receipt_id, contribution_id, project_id, origin_device_id,
+             device_project_sequence, envelope, envelope_sha256, state,
+             received_at, last_error_code)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          receiptId, id, project, origin, sequence, envelope, digest,
+          state, timestamp, errorCode,
+        );
+
+        if (integrityConflict) {
+          if (identityConflict) {
+            db.prepare(`
+              UPDATE sync_inbox
+              SET state = 'quarantined', last_error_code = ?
+              WHERE contribution_id = ? AND state <> 'applied'
+            `).run(errorCode, id);
+          }
+          if (sequenceConflict) {
+            db.prepare(`
+              UPDATE sync_inbox
+              SET state = 'quarantined', last_error_code = 'origin_sequence_conflict'
+              WHERE project_id = ? AND origin_device_id = ?
+                AND device_project_sequence = ? AND state <> 'applied'
+            `).run(project, origin, sequence);
+          }
+        }
+
+        return {
+          receiptId,
+          contributionId: id,
+          envelopeSha256: digest,
+          state,
+          duplicate: false,
+          integrityConflict,
+          lastErrorCode: errorCode,
+        };
+      });
+    },
+
+    listSyncInbox({ projectId = null, state = null } = {}) {
+      ensureOpen();
+      const project = optionalText(projectId, 'projectId');
+      const inboxState = optionalText(state, 'state');
+      if (inboxState && !['received', 'pending', 'applied', 'quarantined'].includes(inboxState)) {
+        throw new TypeError('state must be received, pending, applied or quarantined');
+      }
+      const conditions = [];
+      const params = [];
+      if (project) {
+        conditions.push('project_id = ?');
+        params.push(project);
+      }
+      if (inboxState) {
+        conditions.push('state = ?');
+        params.push(inboxState);
+      }
+      const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+      return db.prepare(`
+        SELECT receipt_id AS receiptId, contribution_id AS contributionId,
+          project_id AS projectId, origin_device_id AS originDeviceId,
+          device_project_sequence AS deviceProjectSequence,
+          envelope_sha256 AS envelopeSha256, state,
+          received_at AS receivedAt, last_error_code AS lastErrorCode
+        FROM sync_inbox ${where}
+        ORDER BY received_at, receipt_id
+      `).all(...params);
+    },
+
+    getSyncInboxReceipt(receiptId) {
+      ensureOpen();
+      const id = requiredText(receiptId, 'receiptId');
+      return db.prepare(`
+        SELECT receipt_id AS receiptId, contribution_id AS contributionId,
+          project_id AS projectId, origin_device_id AS originDeviceId,
+          device_project_sequence AS deviceProjectSequence,
+          envelope, envelope_sha256 AS envelopeSha256, state,
+          received_at AS receivedAt, last_error_code AS lastErrorCode
+        FROM sync_inbox WHERE receipt_id = ?
+      `).get(id) ?? null;
+    },
+
+    getSyncAppliedContribution(contributionId) {
+      ensureOpen();
+      const id = requiredText(contributionId, 'contributionId');
+      return db.prepare(`
+        SELECT contribution_id AS contributionId, project_id AS projectId,
+          origin_device_id AS originDeviceId,
+          device_project_sequence AS deviceProjectSequence,
+          envelope_sha256 AS envelopeSha256, applied_at AS appliedAt
+        FROM sync_applied_contributions WHERE contribution_id = ?
+      `).get(id) ?? null;
     },
 
     getProjectHistoryBoundary(projectId) {
