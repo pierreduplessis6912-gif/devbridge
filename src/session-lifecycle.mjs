@@ -1075,6 +1075,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     listUnaddressedStalenessMarkers(sessionId) {
       ensureOpen();
       const session = requiredText(sessionId, 'sessionId');
+      const active = this.getActiveActivation(session);
+      if (!active) return [];
       return db.prepare(`
         SELECT m.id, m.project_id AS projectId,
           m.target_session_id AS targetSessionId,
@@ -1087,6 +1089,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           m.source_activation_id AS sourceActivationId, m.marked_at AS markedAt
         FROM activation_staleness_markers m
         WHERE m.target_session_id = ?
+          AND m.target_activation_id = ?
           AND m.newer_event_sequence > COALESCE((
             SELECT MAX(i.project_event_sequence)
             FROM activation_refresh_intents i
@@ -1095,7 +1098,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
             WHERE i.activation_id = m.target_activation_id
           ), m.target_handover_event_sequence)
         ORDER BY m.newer_event_sequence, m.id
-      `).all(session);
+      `).all(session, active.id);
     },
 
     listRefreshAttempts(sessionId) {
@@ -1233,6 +1236,13 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       const active = this.getActiveActivation(session);
       if (!active) {
         throw new Error('Session has no active confirmed Project Activation; contribution was not recorded');
+      }
+      const staleMarkers = this.listUnaddressedStalenessMarkers(session);
+      if (staleMarkers.length) {
+        const error = new Error('Stale Project context must be refreshed before continuation');
+        error.code = 'STALE_CONTEXT_REFRESH_REQUIRED';
+        error.stalenessMarkers = staleMarkers;
+        throw error;
       }
 
       // The store's insert trigger revalidates this exact activation, handover,
