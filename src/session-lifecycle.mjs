@@ -369,6 +369,35 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     CREATE INDEX IF NOT EXISTS activation_staleness_target
       ON activation_staleness_markers(target_session_id, target_activation_id, newer_event_sequence);
 
+    CREATE TRIGGER IF NOT EXISTS activation_staleness_scope_insert
+      BEFORE INSERT ON activation_staleness_markers
+      WHEN NOT EXISTS (
+        SELECT 1
+        FROM project_activations a
+        JOIN handover_snapshots h ON h.id = a.handover_snapshot_id
+        JOIN project_events e ON e.id = NEW.newer_event_id
+        JOIN project_records r ON r.id = NEW.newer_record_id
+        WHERE a.id = NEW.target_activation_id
+          AND a.session_id = NEW.target_session_id
+          AND a.project_id = NEW.project_id
+          AND a.handover_snapshot_id = NEW.target_handover_snapshot_id
+          AND h.project_event_sequence = NEW.target_handover_event_sequence
+          AND e.project_id = NEW.project_id
+          AND e.event_type = 'record_added'
+          AND e.record_id = NEW.newer_record_id
+          AND e.event_sequence = NEW.newer_event_sequence
+          AND e.event_sequence > h.project_event_sequence
+          AND r.project_id = NEW.project_id
+          AND r.session_id IS NEW.source_session_id
+          AND r.activation_id IS NEW.source_activation_id
+          AND e.occurred_at = NEW.marked_at
+          AND NOT EXISTS (
+            SELECT 1 FROM session_lifecycle_events ended
+            WHERE ended.activation_id = a.id AND ended.event_type = 'activation_ended'
+          )
+      )
+      BEGIN SELECT RAISE(ABORT, 'staleness marker must reference a newer Project contribution and its exact active activation boundary'); END;
+
     CREATE TRIGGER IF NOT EXISTS project_event_marks_stale_activations
       AFTER INSERT ON project_events
       WHEN NEW.event_type = 'record_added' AND NEW.record_id IS NOT NULL
