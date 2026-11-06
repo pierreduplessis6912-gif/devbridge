@@ -247,7 +247,7 @@ export function openStore(databasePath) {
     // Version 5 adds explicit local sync opt-in and a durable local outbox.
     if (version < 5) {
       withTransaction(db, () => {
-        db.exec("
+        db.exec(`
           CREATE TABLE sync_local_device (
             singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
             device_id TEXT NOT NULL UNIQUE,
@@ -293,7 +293,7 @@ export function openStore(databasePath) {
           CREATE INDEX sync_contributions_project_sequence ON sync_contributions(project_id, origin_device_id, device_project_sequence);
           CREATE INDEX sync_outbox_state_created ON sync_outbox(state, created_at, contribution_id);
           PRAGMA user_version = 5;
-        ");
+        `);
       });
     }
   } catch (error) {
