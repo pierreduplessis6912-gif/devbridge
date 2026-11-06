@@ -453,6 +453,73 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     CREATE TRIGGER IF NOT EXISTS activation_staleness_markers_no_delete
       BEFORE DELETE ON activation_staleness_markers
       BEGIN SELECT RAISE(ABORT, 'activation staleness markers are append-only'); END;
+    CREATE TABLE IF NOT EXISTS activation_refresh_intents (
+      id TEXT PRIMARY KEY,
+      delivery_id TEXT NOT NULL UNIQUE,
+      activation_id TEXT NOT NULL REFERENCES project_activations(id),
+      session_id TEXT NOT NULL REFERENCES sessions(id),
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      project_event_sequence INTEGER NOT NULL CHECK (project_event_sequence >= 1),
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE IF NOT EXISTS activation_refresh_attempts (
+      id TEXT PRIMARY KEY,
+      refresh_intent_id TEXT NOT NULL UNIQUE REFERENCES activation_refresh_intents(id),
+      outcome TEXT NOT NULL CHECK (outcome IN ('acknowledged', 'failed', 'unknown')),
+      acknowledgement_level TEXT,
+      provider_reference TEXT,
+      attempted_at TEXT NOT NULL,
+      CHECK ((outcome = 'acknowledged' AND acknowledgement_level IS NOT NULL)
+        OR (outcome <> 'acknowledged' AND acknowledgement_level IS NULL))
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS activation_refresh_activation
+      ON activation_refresh_intents(activation_id, project_event_sequence);
+    CREATE TRIGGER IF NOT EXISTS activation_refresh_intents_scope_insert
+      BEFORE INSERT ON activation_refresh_intents
+      WHEN NOT EXISTS (
+        SELECT 1 FROM project_activations a
+        JOIN handover_snapshots h ON h.id = a.handover_snapshot_id
+        WHERE a.id = NEW.activation_id
+          AND a.session_id = NEW.session_id
+          AND a.project_id = NEW.project_id
+          AND NEW.project_event_sequence >= h.project_event_sequence
+          AND NEW.project_event_sequence <= (
+            SELECT COALESCE(MAX(event_sequence), 0) FROM project_events WHERE project_id = NEW.project_id
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM session_lifecycle_events ended
+            WHERE ended.activation_id = a.id AND ended.event_type = 'activation_ended'
+          )
+      )
+      BEGIN SELECT RAISE(ABORT, 'refresh intent must target the exact active activation and a valid Project boundary'); END;
+    CREATE TRIGGER IF NOT EXISTS activation_refresh_intents_no_update
+      BEFORE UPDATE ON activation_refresh_intents
+      BEGIN SELECT RAISE(ABORT, 'activation refresh intents are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS activation_refresh_intents_no_delete
+      BEFORE DELETE ON activation_refresh_intents
+      BEGIN SELECT RAISE(ABORT, 'activation refresh intents are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS activation_refresh_attempts_no_update
+      BEFORE UPDATE ON activation_refresh_attempts
+      BEGIN SELECT RAISE(ABORT, 'activation refresh attempts are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS activation_refresh_attempts_no_delete
+      BEFORE DELETE ON activation_refresh_attempts
+      BEGIN SELECT RAISE(ABORT, 'activation refresh attempts are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS project_records_block_stale_continuation
+      BEFORE INSERT ON project_records
+      WHEN NEW.activation_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM activation_staleness_markers m
+          WHERE m.target_activation_id = NEW.activation_id
+            AND m.newer_event_sequence > COALESCE((
+              SELECT MAX(i.project_event_sequence)
+              FROM activation_refresh_intents i
+              JOIN activation_refresh_attempts a
+                ON a.refresh_intent_id = i.id AND a.outcome = 'acknowledged'
+              WHERE i.activation_id = NEW.activation_id
+            ), m.target_handover_event_sequence)
+        )
+      BEGIN SELECT RAISE(ABORT, 'stale Project context must be refreshed before continuation'); END;
   `));
 
   let closed = false;
@@ -1002,6 +1069,157 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         status: acknowledged ? 'active' : 'blocked',
         reason: acknowledged ? null : outcome,
         activation, handoverId, deliveryAttemptId: attemptId,
+      };
+    },
+
+    listUnaddressedStalenessMarkers(sessionId) {
+      ensureOpen();
+      const session = requiredText(sessionId, 'sessionId');
+      return db.prepare(`
+        SELECT m.id, m.project_id AS projectId,
+          m.target_session_id AS targetSessionId,
+          m.target_activation_id AS targetActivationId,
+          m.target_handover_snapshot_id AS targetHandoverSnapshotId,
+          m.target_handover_event_sequence AS targetHandoverEventSequence,
+          m.newer_event_sequence AS newerEventSequence,
+          m.newer_event_id AS newerEventId, m.newer_record_id AS newerRecordId,
+          m.source_session_id AS sourceSessionId,
+          m.source_activation_id AS sourceActivationId, m.marked_at AS markedAt
+        FROM activation_staleness_markers m
+        WHERE m.target_session_id = ?
+          AND m.newer_event_sequence > COALESCE((
+            SELECT MAX(i.project_event_sequence)
+            FROM activation_refresh_intents i
+            JOIN activation_refresh_attempts a
+              ON a.refresh_intent_id = i.id AND a.outcome = 'acknowledged'
+            WHERE i.activation_id = m.target_activation_id
+          ), m.target_handover_event_sequence)
+        ORDER BY m.newer_event_sequence, m.id
+      `).all(session);
+    },
+
+    listRefreshAttempts(sessionId) {
+      ensureOpen();
+      return db.prepare(`
+        SELECT a.id AS attemptId, i.id AS refreshIntentId,
+          i.delivery_id AS deliveryId, i.activation_id AS activationId,
+          i.project_id AS projectId, i.project_event_sequence AS projectEventSequence,
+          a.outcome, a.acknowledgement_level AS acknowledgementLevel,
+          a.provider_reference AS providerReference, a.attempted_at AS attemptedAt
+        FROM activation_refresh_intents i
+        LEFT JOIN activation_refresh_attempts a ON a.refresh_intent_id = i.id
+        WHERE i.session_id = ? ORDER BY i.rowid
+      `).all(requiredText(sessionId, 'sessionId'));
+    },
+
+    async refreshStaleActivation({ sessionId, providerAdapter }) {
+      ensureOpen();
+      const session = requiredText(sessionId, 'sessionId');
+      const active = this.getActiveActivation(session);
+      if (!active) throw new Error('Session has no active Project Activation to refresh');
+      const staleMarkers = this.listUnaddressedStalenessMarkers(session);
+      if (!staleMarkers.length) {
+        return { status: 'current', activationId: active.id, refreshIntentId: null };
+      }
+      const priorUnresolved = db.prepare(`
+        SELECT 1 FROM activation_refresh_intents i
+        LEFT JOIN activation_refresh_attempts a ON a.refresh_intent_id = i.id
+        WHERE i.activation_id = ? AND (a.id IS NULL OR a.outcome = 'unknown') LIMIT 1
+      `).get(active.id);
+      if (priorUnresolved) throw new Error('An earlier refresh delivery is unresolved; automatic retry is prohibited');
+      if (!providerAdapter || typeof providerAdapter.deliver !== 'function'
+        || !providerAdapter.capabilities || providerAdapter.capabilities.contextDelivery !== true) {
+        throw new TypeError('providerAdapter must support context delivery');
+      }
+
+      const handover = continuityStore.buildHandover(active.projectId);
+      const boundary = handover.historyBoundary;
+      if (!boundary || boundary.projectId !== active.projectId
+        || !Number.isSafeInteger(boundary.eventSequence) || boundary.eventSequence < 1
+        || boundary.eventSequence < staleMarkers[0].newerEventSequence) {
+        throw new Error('Fresh handover must include the newer Project history that made the activation stale');
+      }
+      const intentId = randomUUID();
+      const deliveryId = randomUUID();
+      const generatedAt = requiredText(handover.generatedAt, 'handover.generatedAt');
+      withTransaction(db, () => {
+        const stillActive = db.prepare(`
+          SELECT 1 FROM project_activations a
+          WHERE a.id = ? AND a.session_id = ? AND a.project_id = ?
+            AND NOT EXISTS (
+              SELECT 1 FROM session_lifecycle_events e
+              WHERE e.activation_id = a.id AND e.event_type = 'activation_ended'
+            )
+        `).get(active.id, session, active.projectId);
+        if (!stillActive) throw new Error('Project Activation ended before refresh intent was persisted');
+        const unresolved = db.prepare(`
+          SELECT 1 FROM activation_refresh_intents i
+          LEFT JOIN activation_refresh_attempts a ON a.refresh_intent_id = i.id
+          WHERE i.activation_id = ? AND (a.id IS NULL OR a.outcome = 'unknown') LIMIT 1
+        `).get(active.id);
+        if (unresolved) throw new Error('An earlier refresh delivery is unresolved; automatic retry is prohibited');
+        db.prepare(`
+          INSERT INTO activation_refresh_intents
+            (id, delivery_id, activation_id, session_id, project_id,
+             project_event_sequence, payload_json, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(intentId, deliveryId, active.id, session, active.projectId,
+          boundary.eventSequence, JSON.stringify(handover), generatedAt);
+        appendEvent({
+          sessionId: session, eventType: 'context_refresh_prepared',
+          projectId: active.projectId, activationId: active.id,
+          handoverSnapshotId: active.handoverSnapshotId,
+          summary: 'Fresh context refresh prepared at Project event sequence '
+            + boundary.eventSequence + ' (refresh ' + intentId + ')',
+          occurredAt: generatedAt,
+        });
+      });
+
+      let delivery;
+      try {
+        delivery = await providerAdapter.deliver({
+          deliveryId, idempotencyKey: deliveryId,
+          handover: { id: intentId, projectId: active.projectId, payload: handover },
+          activationRequestId: active.activationRequestId,
+          refreshIntentId: intentId, activationId: active.id,
+        });
+      } catch { delivery = null; }
+      const matches = delivery && delivery.deliveryId === deliveryId
+        && delivery.activationRequestId === active.activationRequestId
+        && delivery.handoverId === intentId
+        && typeof delivery.attemptId === 'string' && delivery.attemptId.trim();
+      const validOutcome = matches && ['acknowledged', 'failed', 'unknown'].includes(delivery.outcome);
+      const acknowledged = validOutcome && delivery.outcome === 'acknowledged'
+        && delivery.acknowledgementLevel === providerAdapter.capabilities.acknowledgementLevel;
+      const outcome = acknowledged ? 'acknowledged'
+        : validOutcome && delivery.outcome === 'failed' ? 'failed' : 'unknown';
+      const attemptId = randomUUID();
+      const attemptedAt = new Date().toISOString();
+      withTransaction(db, () => {
+        db.prepare(`
+          INSERT INTO activation_refresh_attempts
+            (id, refresh_intent_id, outcome, acknowledgement_level, provider_reference, attempted_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(attemptId, intentId, outcome,
+          acknowledged ? delivery.acknowledgementLevel : null,
+          matches ? (delivery.providerReference ?? delivery.attemptId) : null, attemptedAt);
+        appendEvent({
+          sessionId: session,
+          eventType: outcome === 'acknowledged' ? 'context_refresh_acknowledged'
+            : outcome === 'failed' ? 'context_refresh_failed' : 'context_refresh_unknown',
+          projectId: active.projectId, activationId: active.id,
+          handoverSnapshotId: active.handoverSnapshotId,
+          summary: 'Context refresh outcome: ' + outcome + ' (refresh ' + intentId + ')',
+          occurredAt: attemptedAt,
+        });
+      });
+      const remaining = this.listUnaddressedStalenessMarkers(session);
+      return {
+        status: acknowledged ? (remaining.length ? 'stale' : 'refreshed') : 'blocked',
+        reason: acknowledged ? (remaining.length ? 'newer_contribution_during_refresh' : null) : outcome,
+        activationId: active.id, refreshIntentId: intentId, deliveryAttemptId: attemptId,
+        deliveredEventSequence: boundary.eventSequence,
+        remainingStalenessMarkers: remaining,
       };
     },
 
