@@ -422,3 +422,21 @@ SLA-01 through SLA-12 have implementation and dedicated executable test coverage
 - **Multi-device continuity:** cross-device synchronisation and conflict-free recovery remain unverified.
 
 These are explicit future security, integration and operational gates. They must not be represented as failed lifecycle tests or silently treated as complete.
+
+
+### Post-cleanup full-suite Termux verification
+
+Verified locally by the user on Android/Termux with Node.js v26.3.1 after pulling lifecycle cleanup commit `4c5f835`:
+
+- Command: `npm test`
+- Tests: 41
+- Passed: 41
+- Failed: 0
+- Cancelled: 0
+- Skipped: 0
+- TODO: 0
+- Duration: 1889.901718 ms
+
+All 41 discovered tests passed. The run includes the dedicated executable coverage for SLA-06 through SLA-12, the activation and recovery scenarios, unknown-delivery handling, confirmation-boundary checks, provider-adapter contract tests, and store integrity tests.
+
+This is the user's reported local result for the checked-out branch at `4c5f835`; it is not a claim that the assistant executed the tests. The zero TODO count confirms that the obsolete lifecycle placeholders have been removed. This local deterministic SQLite suite does not close the separately listed production authentication/authorization, real-provider integration, provider reconciliation, multi-process concurrency, backup/restore or multi-device continuity gates.
