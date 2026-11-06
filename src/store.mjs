@@ -626,6 +626,7 @@ export function openStore(databasePath) {
     },
 
 
+    // Stores opaque, untrusted transport input only; it does not authenticate or apply Project content.
     receiveSyncEnvelope({
       contributionId,
       projectId,
@@ -650,7 +651,8 @@ export function openStore(databasePath) {
           SELECT receipt_id AS receiptId, contribution_id AS contributionId,
             project_id AS projectId, origin_device_id AS originDeviceId,
             device_project_sequence AS deviceProjectSequence,
-            envelope_sha256 AS envelopeSha256, state
+            envelope_sha256 AS envelopeSha256, state,
+            last_error_code AS lastErrorCode
           FROM sync_inbox WHERE contribution_id = ?
           ORDER BY received_at, receipt_id
         `).all(id);
@@ -685,7 +687,8 @@ export function openStore(databasePath) {
             envelopeSha256: digest,
             state: exactReceipt.state,
             duplicate: true,
-            integrityConflict: false,
+            integrityConflict: exactReceipt.state === 'quarantined',
+            lastErrorCode: exactReceipt.lastErrorCode,
           };
         }
         if (appliedById
@@ -735,8 +738,8 @@ export function openStore(databasePath) {
               UPDATE sync_inbox
               SET state = 'quarantined', last_error_code = 'origin_sequence_conflict'
               WHERE project_id = ? AND origin_device_id = ?
-                AND device_project_sequence = ? AND state <> 'applied'
-            `).run(project, origin, sequence);
+                AND device_project_sequence = ? AND contribution_id <> ? AND state <> 'applied'
+            `).run(project, origin, sequence, id);
           }
         }
 
