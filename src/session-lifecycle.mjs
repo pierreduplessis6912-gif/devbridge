@@ -1139,7 +1139,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       const boundary = handover.historyBoundary;
       if (!boundary || boundary.projectId !== active.projectId
         || !Number.isSafeInteger(boundary.eventSequence) || boundary.eventSequence < 1
-        || boundary.eventSequence < staleMarkers[0].newerEventSequence) {
+        || boundary.eventSequence < Math.max(...staleMarkers.map((marker) => marker.newerEventSequence))) {
         throw new Error('Fresh handover must include the newer Project history that made the activation stale');
       }
       const intentId = randomUUID();
