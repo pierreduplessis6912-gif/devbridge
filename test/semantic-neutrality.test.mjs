@@ -151,7 +151,7 @@ test('SLA-10: differing concurrent contributions remain neutral until an attribu
           relationship
         FROM record_links
         WHERE from_record_id = ?
-      `).all(explicitDisagreement.id);
+      `).all(explicitDisagreement.id).map((row) => ({ ...row }));
       assert.deepEqual(explicitLinks, [{
         fromRecordId: 'neutral-explicit-disagreement',
         toRecordId: 'neutral-record-two',
