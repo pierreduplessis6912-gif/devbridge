@@ -221,12 +221,16 @@ Every acceptance scenario must preserve these rules:
 - Each has its own activation and handover boundary.
 
 **When**
-- Both Sessions submit contributions, including contributions made before either has refreshed.
+- Both Sessions submit contributions while their activations are current.
+- Each submission is durably reserved against its exact active activation and Project event-sequence boundary before either reserved contribution is committed.
+- The two reserved contributions are committed in either order, so the first commit may mark the other activation potentially stale before the second commit completes.
 
 **Then**
-- Both contributions are retained.
+- Both already-reserved contributions are retained.
 - Each contribution remains attributed to its own Session, activation, actor/source and context boundary.
 - Neither contribution overwrites or absorbs the other.
+- A reservation created after an activation is already stale is rejected.
+- Once the in-flight reservations are committed, any subsequent continuation under a stale activation is blocked until its own fresh handover is acknowledged.
 - A later handover can represent both contributions and their provenance, subject to its declared history boundary.
 
 ### SLA-10 — Concurrency and staleness do not become semantic conflict judgements
