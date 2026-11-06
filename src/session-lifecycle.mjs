@@ -79,6 +79,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       project_id TEXT NOT NULL REFERENCES projects(id),
       format TEXT NOT NULL,
       history_boundary TEXT,
+      project_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK (project_event_sequence >= 0),
       payload_json TEXT NOT NULL,
       generated_at TEXT NOT NULL
     ) STRICT;
@@ -335,6 +336,73 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
     db.exec('ALTER TABLE session_lifecycle_events ADD COLUMN checkpoint_id TEXT REFERENCES outgoing_checkpoints(id)');
   }
 
+  // Additive migration for lifecycle databases created before exact handover
+  // event-sequence boundaries were persisted.
+  const handoverColumns = db.prepare('PRAGMA table_info(handover_snapshots)').all()
+    .map((column) => column.name);
+  if (!handoverColumns.includes('project_event_sequence')) {
+    withTransaction(db, () => db.exec(
+      'ALTER TABLE handover_snapshots ADD COLUMN project_event_sequence INTEGER NOT NULL DEFAULT 0',
+    ));
+  }
+
+  // A Project record event atomically marks every other active activation whose
+  // supplied handover boundary predates that event. Markers are facts, not
+  // semantic conflict judgements, and remain append-only historical evidence.
+  withTransaction(db, () => db.exec(`
+    CREATE TABLE IF NOT EXISTS activation_staleness_markers (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id),
+      target_session_id TEXT NOT NULL REFERENCES sessions(id),
+      target_activation_id TEXT NOT NULL REFERENCES project_activations(id),
+      target_handover_snapshot_id TEXT NOT NULL REFERENCES handover_snapshots(id),
+      target_handover_event_sequence INTEGER NOT NULL CHECK (target_handover_event_sequence >= 0),
+      newer_event_sequence INTEGER NOT NULL CHECK (newer_event_sequence > target_handover_event_sequence),
+      newer_event_id TEXT NOT NULL REFERENCES project_events(id),
+      newer_record_id TEXT NOT NULL REFERENCES project_records(id),
+      source_session_id TEXT REFERENCES sessions(id),
+      source_activation_id TEXT REFERENCES project_activations(id),
+      marked_at TEXT NOT NULL,
+      UNIQUE(target_activation_id, newer_event_id)
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS activation_staleness_target
+      ON activation_staleness_markers(target_session_id, target_activation_id, newer_event_sequence);
+
+    CREATE TRIGGER IF NOT EXISTS project_event_marks_stale_activations
+      AFTER INSERT ON project_events
+      WHEN NEW.event_type = 'record_added' AND NEW.record_id IS NOT NULL
+      BEGIN
+        INSERT OR IGNORE INTO activation_staleness_markers (
+          id, project_id, target_session_id, target_activation_id,
+          target_handover_snapshot_id, target_handover_event_sequence,
+          newer_event_sequence, newer_event_id, newer_record_id,
+          source_session_id, source_activation_id, marked_at
+        )
+        SELECT lower(hex(randomblob(16))), a.project_id, a.session_id, a.id,
+          a.handover_snapshot_id, h.project_event_sequence,
+          NEW.event_sequence, NEW.id, NEW.record_id,
+          source.session_id, source.activation_id, NEW.occurred_at
+        FROM project_activations a
+        JOIN handover_snapshots h ON h.id = a.handover_snapshot_id
+        LEFT JOIN project_records source ON source.id = NEW.record_id
+        WHERE a.project_id = NEW.project_id
+          AND h.project_event_sequence < NEW.event_sequence
+          AND (source.activation_id IS NULL OR a.id <> source.activation_id)
+          AND NOT EXISTS (
+            SELECT 1 FROM session_lifecycle_events ended
+            WHERE ended.activation_id = a.id AND ended.event_type = 'activation_ended'
+          );
+      END;
+
+    CREATE TRIGGER IF NOT EXISTS activation_staleness_markers_no_update
+      BEFORE UPDATE ON activation_staleness_markers
+      BEGIN SELECT RAISE(ABORT, 'activation staleness markers are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS activation_staleness_markers_no_delete
+      BEFORE DELETE ON activation_staleness_markers
+      BEGIN SELECT RAISE(ABORT, 'activation staleness markers are append-only'); END;
+  `));
+
   let closed = false;
   const ensureOpen = () => { if (closed) throw new Error('Session lifecycle store is closed'); };
 
@@ -393,6 +461,23 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           delivery_attempt_id AS deliveryAttemptId, checkpoint_id AS checkpointId,
           summary, occurred_at AS occurredAt
         FROM session_lifecycle_events WHERE session_id = ? ORDER BY sequence
+      `).all(requiredText(sessionId, 'sessionId'));
+    },
+
+    listStalenessMarkers(sessionId) {
+      ensureOpen();
+      return db.prepare(`
+        SELECT id, project_id AS projectId, target_session_id AS targetSessionId,
+          target_activation_id AS targetActivationId,
+          target_handover_snapshot_id AS targetHandoverSnapshotId,
+          target_handover_event_sequence AS targetHandoverEventSequence,
+          newer_event_sequence AS newerEventSequence,
+          newer_event_id AS newerEventId, newer_record_id AS newerRecordId,
+          source_session_id AS sourceSessionId,
+          source_activation_id AS sourceActivationId, marked_at AS markedAt
+        FROM activation_staleness_markers
+        WHERE target_session_id = ?
+        ORDER BY rowid
       `).all(requiredText(sessionId, 'sessionId'));
     },
 
@@ -725,6 +810,12 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       }
 
       const handover = continuityStore.buildHandover(project);
+      const handoverBoundary = handover.historyBoundary;
+      if (!handoverBoundary || handoverBoundary.projectId !== project
+        || !Number.isSafeInteger(handoverBoundary.eventSequence)
+        || handoverBoundary.eventSequence < 1) {
+        throw new Error('Handover must include an exact Project event-sequence boundary');
+      }
       const handoverId = randomUUID();
       const deliveryId = randomUUID();
       const generatedAt = requiredText(handover.generatedAt, 'handover.generatedAt');
@@ -755,11 +846,12 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         db.prepare(`
           INSERT INTO handover_snapshots
             (id, session_id, activation_request_id, project_id, format,
-             history_boundary, payload_json, generated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             history_boundary, project_event_sequence, payload_json, generated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           handoverId, session, request, project, handover.format,
-          handover.lastRecordedActivityAt, JSON.stringify(handover), generatedAt,
+          handover.lastRecordedActivityAt, handoverBoundary.eventSequence,
+          JSON.stringify(handover), generatedAt,
         );
         db.prepare(`
           INSERT INTO context_delivery_intents
