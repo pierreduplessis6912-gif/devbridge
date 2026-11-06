@@ -218,7 +218,11 @@ The complete test command `npm test` passed on Android/Termux with Node `v26.3.1
 
 ### Gate 3 — Recovery and hardening
 
-The branch includes passing Termux tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, schema migration to v4 contribution attribution and the SLT-23 outgoing checkpoint boundary. SLA-02 A → B switching, SLA-03 A → B → A return, SLA-05 failed-switch recovery and SLA-06 contribution attribution all pass in the latest full run at `f4cff73` (28 passed, 0 failed, 7 TODO). SLA-07 staleness detection has now been implemented with exact handover event-sequence boundaries, append-only provenance markers, and coverage for contributions both after activation and during handover delivery; the new tests await Termux execution. SLA-08 refresh, concurrent contribution handling, semantic non-judgement, cross-Project reference isolation, Session ending and the remaining integrity scenarios are still outstanding.
+The branch includes passing Termux tests for process termination after simulated provider acceptance, mismatched acknowledgement, duplicate delivery invocation, separately authorised fresh-Session recovery, schema migration to v4 contribution attribution and the SLT-23 outgoing checkpoint boundary. SLA-02 A → B switching, SLA-03 A → B → A return, SLA-05 failed-switch recovery and SLA-06 contribution attribution passed in the earlier full run at `f4cff73` (35 tests, 28 passed, 0 failed, 7 TODO).
+
+**SLA-07 is implemented and locally verified** on branch `build/v1-scope`. At commit `8da1486`, the user ran `npm test` in Android/Termux with Node `v26.3.1`: **37 tests, 30 passed, 0 failed, 7 TODO** (1.39 seconds). Both SLA-07 tests passed: a newer Project contribution marks other older active activations potentially stale, and a contribution arriving during handover delivery marks the new activation stale when it is registered. The seven TODO entries remain acceptance placeholders for SLA-06 through SLA-12; they are not failed tests.
+
+SLA-08 refresh, concurrent contribution handling, semantic non-judgement, cross-Project reference isolation, Session ending and the remaining integrity scenarios are still outstanding. A passing SLA-07 test does not establish that stale-context refresh is implemented; that is the separate SLA-08 requirement.
 
 ### Gate 4 — Review
 
