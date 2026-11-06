@@ -156,12 +156,36 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       WHEN NOT EXISTS (
         SELECT 1 FROM project_activations a
         JOIN activation_requests r ON r.id = NEW.incoming_activation_request_id
+        JOIN activation_confirmations c ON c.activation_request_id = r.id
+        JOIN project_events p ON p.id = NEW.project_event_id
         WHERE a.id = NEW.outgoing_activation_id
           AND a.session_id = NEW.session_id
           AND a.project_id = NEW.project_id
           AND a.handover_snapshot_id = NEW.handover_snapshot_id
           AND r.session_id = NEW.session_id
           AND r.project_id <> NEW.project_id
+          AND p.project_id = NEW.project_id
+          AND p.event_sequence = NEW.project_event_sequence
+          AND p.occurred_at = NEW.project_event_at
+          AND NEW.project_event_count = (
+            SELECT COUNT(*) FROM project_events e
+            WHERE e.project_id = NEW.project_id
+              AND e.event_sequence <= NEW.project_event_sequence
+          )
+          AND NEW.project_record_count = (
+            SELECT COUNT(*) FROM project_records pr
+            WHERE pr.project_id = NEW.project_id
+              AND EXISTS (
+                SELECT 1 FROM project_events e
+                WHERE e.project_id = pr.project_id
+                  AND e.record_id = pr.id
+                  AND e.event_sequence <= NEW.project_event_sequence
+              )
+          )
+          AND NEW.lifecycle_event_sequence = (
+            SELECT COALESCE(MAX(sequence), 0)
+            FROM session_lifecycle_events WHERE session_id = NEW.session_id
+          )
           AND NOT EXISTS (
             SELECT 1 FROM session_lifecycle_events e
             WHERE e.activation_id = a.id AND e.event_type = 'activation_ended'
@@ -387,7 +411,7 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
 
       withTransaction(db, () => {
         const active = db.prepare(`
-          SELECT a.project_id AS projectId FROM project_activations a
+          SELECT a.id AS activationId, a.project_id AS projectId FROM project_activations a
           WHERE a.session_id = ?
             AND NOT EXISTS (
               SELECT 1 FROM session_lifecycle_events e
@@ -422,7 +446,8 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
         `).run(request, session, project, timestamp);
         appendEvent({
           sessionId: session, eventType: 'activation_requested', projectId: project,
-          activationRequestId: request, summary: 'Activation requested for project ' + project,
+          activationRequestId: request, activationId: active?.activationId ?? null,
+          summary: 'Activation requested for project ' + project,
           occurredAt: timestamp,
         });
       });
@@ -619,14 +644,17 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       if (this.getActiveActivation(session)) {
         throw new Error('Outgoing Project Activation must be checkpointed before incoming activation delivery');
       }
-      const previousActivation = db.prepare(`
-        SELECT project_id AS projectId FROM project_activations
-        WHERE session_id = ? ORDER BY rowid DESC LIMIT 1
-      `).get(session);
-      if (previousActivation && previousActivation.projectId !== project
-        && !db.prepare(
-          'SELECT 1 FROM outgoing_checkpoints WHERE incoming_activation_request_id = ? LIMIT 1',
-        ).get(request)) {
+      const requestContext = db.prepare(`
+        SELECT activation_id AS outgoingActivationId
+        FROM session_lifecycle_events
+        WHERE activation_request_id = ? AND event_type = 'activation_requested'
+      `).get(request);
+      if (requestContext?.outgoingActivationId
+        && !db.prepare(`
+          SELECT 1 FROM outgoing_checkpoints
+          WHERE incoming_activation_request_id = ?
+            AND outgoing_activation_id = ?
+        `).get(request, requestContext.outgoingActivationId)) {
         throw new Error('Project switch requires an outgoing activation checkpoint');
       }
       if (!providerAdapter || typeof providerAdapter.deliver !== 'function'
