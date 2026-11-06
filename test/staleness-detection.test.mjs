@@ -297,7 +297,7 @@ test('SLA-08: stale activation pauses its next continuation until an acknowledge
   }
 });
 
-test('SLA-08: failed refresh can be explicitly prepared again, but unknown refresh is never replayed', async () => {
+test('SLA-08: a definitive failed refresh can be explicitly prepared again', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'devbridge-refresh-outcomes-test-'));
   const databasePath = join(directory, 'devbridge.sqlite');
   const store = openStore(databasePath);
@@ -403,6 +403,53 @@ test('SLA-08: a contribution arriving during refresh remains newer than its ackn
     });
     assert.equal(secondRefresh.status, 'refreshed');
     assert.equal(firstLifecycle.getActiveActivation('refresh-race-one').id, first.activation.id);
+  } finally {
+    firstLifecycle.close();
+    secondLifecycle.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('SLA-08: unknown refresh remains unresolved and cannot be automatically replayed', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'devbridge-refresh-unknown-test-'));
+  const databasePath = join(directory, 'devbridge.sqlite');
+  const store = openStore(databasePath);
+  const authority = createSimulatedConfirmationAuthority();
+  const firstLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const secondLifecycle = openSessionLifecycle(databasePath, store, { confirmationAuthority: authority });
+  const provider = createSimulatedProvider({ outcomes: ['acknowledged', 'acknowledged', 'unknown', 'acknowledged'] });
+  const activate = async (lifecycle, sessionId, requestId) => {
+    lifecycle.requestProjectActivation({ sessionId, projectId: 'refresh-unknown-project', requestId });
+    await lifecycle.confirmProjectActivation({
+      requestId, confirmationToken: authority.issue({ requestId, sessionId, projectId: 'refresh-unknown-project' }),
+    });
+    return lifecycle.activateProject({ requestId, providerAdapter: provider });
+  };
+
+  try {
+    store.createProject({ id: 'refresh-unknown-project', name: 'Refresh Unknown Project' });
+    firstLifecycle.createSession({ id: 'refresh-unknown-one' });
+    secondLifecycle.createSession({ id: 'refresh-unknown-two' });
+    await activate(firstLifecycle, 'refresh-unknown-one', 'refresh-unknown-request-one');
+    await activate(secondLifecycle, 'refresh-unknown-two', 'refresh-unknown-request-two');
+    secondLifecycle.recordContribution({
+      id: 'refresh-unknown-newer', sessionId: 'refresh-unknown-two',
+      category: 'status', content: 'A newer status.', originType: 'user',
+    });
+
+    const unknown = await firstLifecycle.refreshStaleActivation({
+      sessionId: 'refresh-unknown-one', providerAdapter: provider,
+    });
+    assert.equal(unknown.status, 'blocked');
+    assert.equal(unknown.reason, 'unknown');
+    assert.equal(firstLifecycle.listRefreshAttempts('refresh-unknown-one')[0].outcome, 'unknown');
+    assert.throws(() => firstLifecycle.refreshStaleActivation({
+      sessionId: 'refresh-unknown-one', providerAdapter: provider,
+    }), /unresolved; automatic retry is prohibited/);
+    assert.equal(firstLifecycle.listRefreshAttempts('refresh-unknown-one').length, 1);
+    assert.equal(firstLifecycle.listUnaddressedStalenessMarkers('refresh-unknown-one').length, 1);
   } finally {
     firstLifecycle.close();
     secondLifecycle.close();
