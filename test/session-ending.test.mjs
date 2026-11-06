@@ -62,6 +62,7 @@ test('SLA-12: ending a Session preserves Project identity, records and activatio
       originType: 'user', id: 'session-end-contribution',
     });
     const projectBefore = f.store.getProject(project.id);
+    const seedRecordBefore = f.store.getRecord('session-end-seed');
     const boundaryBefore = f.store.getProjectHistoryBoundary(project.id);
     const recordBefore = f.store.getRecord(contribution.id);
     const activationBefore = f.lifecycle.listActivations('session-end-active');
@@ -78,8 +79,11 @@ test('SLA-12: ending a Session preserves Project identity, records and activatio
     assert.equal(f.lifecycle.getActiveActivation('session-end-active'), null);
     assert.deepEqual(f.lifecycle.listActivations('session-end-active'), activationBefore);
     assert.deepEqual(f.store.getProject(project.id), projectBefore);
-    assert.deepEqual(f.store.getProjectHistoryBoundary(project.id), boundaryBefore);
-    assert.deepEqual(f.store.getRecord('session-end-seed'), f.store.getRecord('session-end-seed'));
+    const boundaryAfter = f.store.getProjectHistoryBoundary(project.id);
+    for (const key of ['projectId', 'recordCount', 'eventCount', 'eventSequence', 'lastEventId', 'lastEventAt']) {
+      assert.equal(boundaryAfter[key], boundaryBefore[key], key);
+    }
+    assert.deepEqual(f.store.getRecord('session-end-seed'), seedRecordBefore);
     assert.deepEqual(f.store.getRecord(contribution.id), recordBefore);
 
     const events = f.lifecycle.listEvents('session-end-active');
