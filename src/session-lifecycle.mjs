@@ -235,6 +235,9 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
       WHEN NOT EXISTS (
         SELECT 1 FROM activation_requests r
         JOIN activation_confirmations c ON c.activation_request_id = r.id
+        JOIN session_lifecycle_events request_event
+          ON request_event.activation_request_id = r.id
+          AND request_event.event_type = 'activation_requested'
         JOIN handover_snapshots h ON h.activation_request_id = r.id
         JOIN context_delivery_intents i ON i.activation_request_id = r.id
         JOIN context_delivery_attempts d ON d.activation_request_id = r.id
@@ -249,8 +252,16 @@ export function openSessionLifecycle(databasePath, continuityStore, { confirmati
           AND d.handover_snapshot_id = NEW.handover_snapshot_id
           AND d.outcome = 'acknowledged'
           AND d.acknowledgement_level IS NOT NULL
+          AND (
+            request_event.activation_id IS NULL
+            OR EXISTS (
+              SELECT 1 FROM outgoing_checkpoints cp
+              WHERE cp.incoming_activation_request_id = r.id
+                AND cp.outgoing_activation_id = request_event.activation_id
+            )
+          )
       )
-      BEGIN SELECT RAISE(ABORT, 'activation requires matching confirmed acknowledged delivery'); END;
+      BEGIN SELECT RAISE(ABORT, 'activation requires matching confirmed acknowledged delivery and switch checkpoint'); END;
 
     CREATE TRIGGER IF NOT EXISTS sessions_no_update BEFORE UPDATE ON sessions
       BEGIN SELECT RAISE(ABORT, 'sessions are append-only'); END;
