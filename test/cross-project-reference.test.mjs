@@ -71,7 +71,7 @@ test('SLA-11: a Cross-Project reference does not activate or disclose the refere
     });
     assert.equal(activation.status, 'active');
     assert.equal(deliveredHandovers.length, 1);
-    assert.equal(deliveredHandovers[0].project.id, 'cross-reference-project-a');
+    assert.equal(deliveredHandovers[0].payload.project.id, 'cross-reference-project-a');
 
     const activationCountBeforeReference = lifecycle.listActivations(
       'cross-reference-session',
