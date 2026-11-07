@@ -335,11 +335,11 @@ All migrations must be tested against disposable database copies. The user's act
 
 ## 16. Current repository mapping
 
-The following mapping is based on source inspection of feat/local-sync-persistence at commit b74d938.
+The following mapping is based on source inspection of feat/local-sync-persistence at commit 457fdf4.
 
 | Existing source | Observed responsibility | Sync design treatment |
 |---|---|---|
-| src/store.mjs | Owns a SQLite connection; schema v1–v5; Project/record/link/event persistence; transactional local appendRecord; local event sequence; handover; local sync device configuration; explicit Project sync enrolment; per-device Project sequence allocation; immutable local contribution snapshots; sync outbox; record-to-contribution mapping | Preserve as continuity foundation. Local record/event and sync outbox creation now share one transaction. Device ID is still only a local identifier, not a cryptographic identity. No sealing, signing, encryption, upload, inbox, or remote acceptance is implemented. |
+| src/store.mjs | Owns a SQLite connection; schema v1–v7; Project/record/link/event persistence; transactional local appendRecord; local event sequence; handover; local sync device configuration; explicit Project sync enrolment; per-device Project sequence allocation; immutable local contribution snapshots; sync outbox; opaque sync inbox receipts; applied-contribution and remote-record ownership ledgers; origin provenance; explicit adoption references | Preserve as continuity foundation. Local record/event and sync outbox creation now share one transaction. Device ID is still only a local identifier, not a cryptographic identity. Incoming envelopes are persisted as opaque, untrusted receipts with exact envelope bytes and SHA-256 digests. Exact duplicates are idempotent; conflicting contribution identity or origin-sequence reuse is quarantined. Schema v7 records origin provenance, explicit adoption references and remote record ownership. No receiving acceptance engine, production sealing, signing, encryption, or remote transport is implemented. |
 | src/session-lifecycle.mjs | Opens a separate SQLite connection; manages sessions, activations, handovers, provider delivery attempts, stale context, contribution intents and commits | Keep as session lifecycle. Session/activation IDs remain optional contribution attribution. Do not make lifecycle IDs sync identities. Review separate-connection transaction boundary before coupling any operation across modules. |
 | src/cross-project-references.mjs | Stores source/target Project IDs and label; explicitly states it is not an authorization system | Preserve separation. Sync references only as references; never infer membership or target Project access. |
 | src/cli.mjs | Local continuity CLI; defaults to .devbridge/devbridge.sqlite; creates directory and opens store | Do not run against default DB during tests. Future sync commands must require explicit account/device setup and safe database selection. |
@@ -363,11 +363,15 @@ The inspected source does not yet implement:
 - device signing, key agreement, production contribution signatures, or end-to-end encryption;
 - Project-key distribution, rotation, recovery, or hardware security-level policy;
 - canonical sealed-envelope generation and durable persistence of the exact sealed envelope;
-- resumable sealing worker, inbox, or applied contribution ledger;
-- remote import/application or dependency staging;
+- resumable sealing worker and crash recovery from pending_seal;
+- authentication, signature verification, decryption, or trusted incoming-content validation;
+- dependency staging and atomic remote contribution acceptance;
+- complete explicit Project adoption/bootstrap workflow;
 - server archive, transport, cursors, or sync acknowledgements;
 - full archive export/import or independent restore;
 - distributed deletion or anti-resurrection.
+
+The local inbox stores opaque, untrusted incoming envelope input and its digest. It does not authenticate, verify, decrypt, validate, resolve dependencies, or apply the contribution. The applied-contribution and remote-record ownership structures provide persistence and ownership tracking; they are not an acceptance engine.
 
 Existing lifecycle acknowledgements relate to AI-provider context delivery, not sync delivery. Existing contribution intents are local session workflow reservations, not remote sync bundles. Existing timestamp cursors are local pagination, not replication cursors.
 
@@ -385,21 +389,26 @@ Existing lifecycle acknowledgements relate to AI-provider context delivery, not 
 
 ### Milestone 1 — Local sync persistence
 
-**Implemented on feat/local-sync-persistence through commit b74d938:**
-- Version 5 sync schema and local sync metadata tables.
+**Partially implemented on feat/local-sync-persistence through commit 457fdf4:**
+- Schema v1–v7, including local sync metadata and inbox/applied-ledger persistence structures.
 - Local Device ID configuration and explicit Project sync enrolment.
 - Per-device Project sequence allocation.
 - Atomic local contribution snapshot + durable outbox work item.
 - Record-to-contribution mapping and immutable contribution reads.
+- Origin provenance fields and uniqueness protection for complete origin sequences.
+- Opaque incoming envelope receipt persistence, exact envelope bytes and SHA-256 digest.
+- Idempotent handling of exact duplicate receipts and quarantine of conflicting identity/sequence reuse.
+- Explicit Project adoption references tied to a specific inbox receipt.
+- Remote record-to-contribution ownership mapping and overlap protection.
 - Disposable-database tests for sequence/dependency behaviour and transaction rollback.
 
 **Remaining:**
 - Resumable sealing worker and crash recovery from pending_seal.
 - Durable persistence of the exact immutable sealed envelope before the outbox becomes ready.
-- Inbox and applied contribution ledger.
+- Authentication, signature verification, decryption and trusted payload validation.
 - Tests for sealing interruption, exact-envelope retry, inbox idempotency, and acceptance transaction boundaries.
 
-The current Device ID is not a cryptographic device identity. No production key operation is part of the completed work.
+The current Device ID is not a cryptographic device identity. Inbox receipts are untrusted transport input only. The applied ledger is persistence structure, not an implemented acceptance engine. No production key operation or production cryptography is part of the completed work.
 
 ### Milestone 2 — Local receiving acceptance
 - Verify test signatures and ciphertext digests.
@@ -503,10 +512,14 @@ These remain open and must be settled before the relevant implementation milesto
 ## 21. Current status
 
 **Local continuity:** implemented and covered by the existing local test suite.  
-**Local sync persistence:** partially implemented on feat/local-sync-persistence through commit b74d938; schema v5, explicit local enrolment, device-local sequence allocation, atomic contribution/outbox creation, and immutable contribution reads are present.  
-**Milestone 1 remaining:** resumable sealing, exact sealed-envelope persistence, inbox, applied ledger, and their crash/idempotency tests.  
+**Test status:** 52 tests pass on the current branch. The schema v7 test expectation has been updated. This does not establish production remote-sync readiness.
+
+**Local sync persistence:** partially implemented on feat/local-sync-persistence through commit 457fdf4; schema v7 includes local enrolment, device-local sequence allocation, atomic contribution/outbox creation, immutable contribution reads, opaque inbox receipt persistence, origin provenance, explicit adoption references, and remote record ownership structures.
+**Milestone 1 remaining:** resumable sealing, durable exact signed/encrypted envelope persistence, and the remaining sealing and retry tests. The inbox and applied-ledger persistence structures already exist.
+**Receiving acceptance:** not implemented. Incoming receipts remain opaque and untrusted; authentication, verification, decryption, payload validation, dependency resolution and atomic application remain future work. The full adoption/bootstrap workflow is also incomplete.
+
 **Cryptographic profile:** proposed candidates documented; final compatibility validation and approval remain outstanding.  
 **Android platform integration:** required for production device-key protection; no Android application, native adapter, or authenticated IPC implementation exists in the repository.  
 **Account authority, production cryptography, server archive/transport, multi-device recovery, portability, and distributed deletion:** not implemented.
 
-The next local coding work is to complete the remaining Milestone 1 persistence work using disposable SQLite fixtures. Production cryptography must wait until Milestone 0 has finalised and reviewed the canonical format, cryptographic profile, Android native boundary, key security policy, and recovery design. No live server or changes to the user's actual local continuity database are part of this work.
+The next local coding work is to complete the remaining Milestone 1 sealing and persistence work using disposable SQLite fixtures. Receiving acceptance is a separate subsequent milestone. Production cryptography must wait until Milestone 0 has finalised and reviewed the canonical format, cryptographic profile, Android native boundary, key security policy, and recovery design. No live server or changes to the user's actual local continuity database are part of this work.
